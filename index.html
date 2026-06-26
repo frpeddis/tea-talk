@@ -6,6 +6,21 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Smart reporter</title>
+<!-- Document parsing libs (loaded lazily, only used when user attaches a PDF/Word/PPT file).
+     - PDF.js: Mozilla's PDF parser, runs fully client-side.
+     - Mammoth.js: extracts plain text from .docx (Word) files.
+     - JSZip: opens .pptx (which is a ZIP of XML slides) so we can read slide text. -->
+<script>
+// Configure PDF.js worker as soon as the lib is available.
+window.addEventListener("load",function setupPdf(){
+  if(window.pdfjsLib){
+    try{ pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; }catch(e){}
+  } else { setTimeout(setupPdf,80); }
+});
+</script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{
     --bg:#04102b; --bg-b:#2f74bd; --bg2:#0c2b5c; --card:#13233f; --card2:#1a3155; --card3:#234070;
@@ -56,6 +71,52 @@
   .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:6px 14px 160px}
   .scroll::-webkit-scrollbar{display:none}
 
+  /* ===== Three-pane workspace =====
+     Left  : chapter recaps + overview (with jump links)
+     Top-R : already-recapped transcript sections (committed chapters)
+     Ctr-R : live transcription tail
+     Each pane has its OWN scroll container so the user can navigate them
+     independently while transcription is running. On narrow screens the
+     panes stack vertically with capped heights so all three remain usable. */
+  .workspace{flex:1;display:flex;gap:8px;padding:4px 10px 6px;min-height:0}
+  .pane{background:linear-gradient(135deg,var(--card),var(--card2));border:1px solid var(--line);
+    border-radius:16px;display:flex;flex-direction:column;min-height:0;overflow:hidden;position:relative}
+  .pane-hd{display:flex;align-items:center;gap:7px;padding:9px 13px;font-size:9.5px;font-weight:800;
+    text-transform:uppercase;letter-spacing:1.3px;color:var(--accent2);border-bottom:1px solid var(--line);
+    flex:none;background:rgba(0,0,0,.20);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pane-hd .bd{width:7px;height:7px;border-radius:50%;background:var(--hot);flex:none;animation:pl 1.4s infinite}
+  .pane-hd .hint{margin-left:auto;font-size:9px;font-weight:600;color:var(--mut);text-transform:none;letter-spacing:.2px}
+  .pane-scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px 14px;scroll-behavior:smooth}
+  .pane-scroll::-webkit-scrollbar{width:4px}
+  .pane-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:2px}
+  .pane-scroll::-webkit-scrollbar-track{background:transparent}
+  .pane-empty-hint{color:var(--mut);font-size:12px;text-align:center;padding:18px 12px;font-style:italic;opacity:.6}
+
+  /* Left pane — fixed width sidebar on wide screens */
+  .pane-left{width:300px;flex:none}
+  .pane-left .pane-scroll{padding:10px 10px 14px}
+
+  /* Right column — top (recapped) + center (live), stacked */
+  .pane-col{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0}
+  .pane-top{flex:1;min-height:80px}
+  .pane-live{flex:1.5;min-height:100px}
+
+  /* The live transcript text area IS the scroll container in the live pane */
+  .pane-live .txt{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 12px 14px;
+    font-size:15px;line-height:1.55;min-height:0;scroll-behavior:smooth;position:relative}
+  .pane-live .txt::-webkit-scrollbar{width:4px}
+  .pane-live .txt::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:2px}
+  .pane-live .txt::-webkit-scrollbar-track{background:transparent}
+
+  /* Responsive: stack panes vertically on narrow screens */
+  @media(max-width:899px){
+    .workspace{flex-direction:column;padding:4px 8px 6px}
+    .pane-left{width:100%;max-height:30vh;flex:none}
+    .pane-col{flex:1;min-height:0}
+    .pane-top{flex:none;max-height:28vh}
+    .pane-live{flex:1;min-height:140px}
+  }
+
   /* Recap (overview) panel — uniform light-blue fill */
   .overview{background:rgba(94,160,240,.16);
     border:1px solid rgba(120,180,255,.42);border-radius:20px;padding:16px;margin-bottom:14px;
@@ -98,14 +159,40 @@
   .ov-q .n{width:22px;height:22px;flex:none;border-radius:7px;display:grid;place-items:center;
     font-size:12px;font-weight:800;background:linear-gradient(135deg,var(--accent3),var(--accent));color:#fff}
 
-  /* Live transcript */
+  /* Live transcript pane — uses .pane-live structure; .live class kept for
+     backward compatibility with the inner content styling. The old standalone
+     .live card was display:none by default, but as a pane it must always be
+     visible — visibility is controlled by the pane structure, not this class. */
   .live{background:linear-gradient(135deg,var(--card),var(--card2));border:1px solid var(--line);
-    border-radius:18px;padding:15px 16px;margin-bottom:14px;min-height:64px;position:relative;overflow:hidden;display:none}
+    border-radius:18px;padding:15px 16px;margin-bottom:14px;min-height:64px;position:relative;overflow:hidden}
   .live::before{content:"";position:absolute;inset:0;background:radial-gradient(60% 100% at 0% 0%,rgba(0,212,255,.12),transparent 60%);pointer-events:none}
   .live .lbl{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--accent2);font-weight:800;margin-bottom:7px;display:flex;align-items:center;gap:6px}
   .live .lbl .bd{width:7px;height:7px;border-radius:50%;background:var(--hot);animation:pl 1.4s infinite}
   .live .txt{font-size:15px;line-height:1.55;min-height:22px;max-height:42vh;overflow-y:auto;scroll-behavior:smooth}
   .live .txt::-webkit-scrollbar{display:none}
+  /* Override .live .txt max-height when the live card is used as a pane —
+     the pane's flex layout handles sizing, and the 42vh cap would prevent
+     the content from ever being scrollable inside the pane.
+     Also override scroll-behavior to auto: the live pane snaps to bottom on
+     every new phrase (renderLive), and smooth scroll would animate every
+     snap — making the auto-scroll pause detection unreliable (the scroll
+     events from the animation keep the debounce timer resetting). Instant
+     scroll means user-initiated scroll-ups are detected cleanly. */
+  .pane-live.live .txt{max-height:none;min-height:0;flex:1;scroll-behavior:auto}
+  /* Auto-scroll paused pill: shown when the user jumps from a recap card to a
+     transcript section (or scrolls up manually) so the live tail doesn't yank
+     the scroll position back while they read. Tap to resume immediately. */
+  .as-pause{position:absolute;left:50%;bottom:8px;transform:translateX(-50%) translateY(8px);
+    background:rgba(20,32,60,.95);border:1px solid var(--accent);color:var(--accent2);
+    font-size:11px;font-weight:700;padding:6px 12px;border-radius:999px;display:none;
+    align-items:center;gap:7px;z-index:5;cursor:pointer;backdrop-filter:blur(6px);
+    -webkit-backdrop-filter:blur(6px);
+    box-shadow:0 6px 18px rgba(0,0,0,.4);opacity:0;transition:opacity .25s,transform .25s;
+    -webkit-tap-highlight-color:transparent;white-space:nowrap;max-width:90%}
+  .as-pause.show{display:inline-flex;opacity:1;transform:translateX(-50%) translateY(0)}
+  .as-pause:active{transform:translateX(-50%) scale(.96)}
+  .as-pause .pdot{width:6px;height:6px;border-radius:50%;background:var(--gold);box-shadow:0 0 6px var(--gold);flex:none}
+  .as-pause .pnew{background:var(--hot);color:#fff;border-radius:999px;padding:1px 6px;font-size:10px;font-weight:800;margin-left:2px}
   .live .interim{color:var(--mut);font-style:italic}
   /* Speaker colors — bright, high-contrast against the dark cards */
   .sp-0{color:#7ee0ff}.sp-1{color:#ffd166}.sp-2{color:#5effa0}
@@ -281,10 +368,6 @@
     border-radius:12px;padding:11px 12px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .keyrow input:focus{outline:none;border-color:var(--accent)}
   .keyrow .eye{background:var(--card3);border:1px solid var(--line);color:var(--txt);border-radius:12px;width:44px;cursor:pointer;font-size:15px;flex:none}
-  .textin{width:100%;background:rgba(0,0,0,.3);border:1px solid var(--line);color:var(--txt);
-    border-radius:12px;padding:11px 12px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-sizing:border-box}
-  .textin:focus{outline:none;border-color:var(--accent)}
-  .textin::placeholder{color:var(--mut);opacity:.7}
   .mbtns{display:flex;gap:8px;margin-top:4px}
   .mbtn{flex:1;border:0;border-radius:12px;padding:12px;font-family:inherit;font-weight:800;font-size:13.5px;cursor:pointer;transition:.2s}
   .mbtn:active{transform:scale(.97)}
@@ -297,13 +380,33 @@
   .mstatus.ok{color:var(--ok)} .mstatus.off{color:var(--mut)}
   .mlink{color:var(--accent2);text-decoration:none}
 
-  .keyrowbtn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px 10px;flex-wrap:wrap;
+  /* Ollama setup panel (shown when Ollama is selected as the provider) */
+  .ollama-block{background:rgba(0,0,0,.26);border:1px solid var(--line);border-radius:13px;padding:13px 14px;margin-top:10px}
+  .ollama-block .ob-title{font-size:11.5px;font-weight:800;letter-spacing:.4px;color:var(--accent2);margin-bottom:6px;display:flex;align-items:center;gap:7px}
+  .ollama-block .ob-title .dot{width:7px;height:7px;background:var(--accent2);animation:none}
+  .ollama-block .ob-sub{font-size:11px;color:var(--mut);line-height:1.55;margin-bottom:10px}
+  .ollama-block code{display:block;background:rgba(0,0,0,.45);border:1px solid var(--line);border-radius:8px;
+    padding:8px 10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:#cfe3ff;
+    margin:5px 0;white-space:pre-wrap;word-break:break-word;user-select:all}
+  .ollama-block .ob-row{display:flex;gap:8px;align-items:center;margin:9px 0 4px}
+  .ollama-block .ob-row label{font-size:10.5px;color:var(--mut);font-weight:700;flex:none;width:62px}
+  .ollama-block .ob-row input{flex:1;min-width:0;background:rgba(0,0,0,.3);border:1px solid var(--line);color:var(--txt);
+    border-radius:9px;padding:8px 10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .ollama-block .ob-row input:focus{outline:none;border-color:var(--accent)}
+  .ollama-block .ob-probe{margin-top:8px;width:100%;border:0;border-radius:10px;padding:9px;
+    font-family:inherit;font-weight:800;font-size:11.5px;cursor:pointer;color:#fff;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));transition:.18s}
+  .ollama-block .ob-probe:active{transform:scale(.98)}
+  .ollama-block .ob-probe.ok{background:linear-gradient(135deg,#1a8a5a,#3ddc97)}
+  .ollama-block .ob-probe.err{background:linear-gradient(135deg,#a13a4a,#ff4d6d)}
+
+  .keyrowbtn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
     background:var(--card3);border:1px solid var(--line);border-radius:13px;padding:13px 14px;
     color:var(--txt);font-family:inherit;font-weight:700;font-size:13.5px;cursor:pointer;transition:.2s}
   .keyrowbtn:active{transform:scale(.98)}
   .keyrowbtn span:first-child{flex:none}
   .mstatus-mini{font-size:10.5px;font-weight:800;padding:4px 9px;border-radius:20px;background:rgba(255,255,255,.06);
-    white-space:nowrap;flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:62%}
   .mstatus-mini.ok{color:var(--ok);background:rgba(61,220,151,.14)}
   .mstatus-mini.off{color:var(--mut)}
 
@@ -326,10 +429,11 @@
   .ctx-files{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
   .ctx-file{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.22);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px}
   .ctx-file .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ctx-file .sz{color:var(--mut);font-size:10px;flex:none;display:inline-flex;align-items:center;gap:5px}
+  .ctx-file .sz{color:var(--mut);font-size:10px;flex:none}
+  .ctx-file .sz.parsing{color:var(--accent2);font-weight:700}
+  .ctx-file .sz.parsing::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--accent2);border-top-color:transparent;animation:spin .7s linear infinite;margin-right:5px;vertical-align:-1px}
+  .ctx-file .sz.err{color:var(--hot);font-weight:700}
   .ctx-file .rm{flex:none;cursor:pointer;color:var(--hot);font-weight:800;border:0;background:transparent;font-size:15px}
-  .spin{display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid rgba(255,255,255,.18);
-    border-top-color:var(--accent2);animation:spin .8s linear infinite;flex:none}
   .hist-list{display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow-y:auto;margin-bottom:12px}
   .hist-list::-webkit-scrollbar{display:none}
   .hist-empty{color:var(--mut);font-size:12px;text-align:center;padding:18px 0}
@@ -382,21 +486,41 @@
     <span class="stat-words" id="wc"></span>
   </div>
 
-  <div class="scroll" id="scroll">
-    <div class="overview" id="overview"></div>
-    <div class="live" id="liveCard">
-      <div class="lbl"><span class="bd"></span> Live transcript</div>
-      <div class="txt" id="liveTxt"><span class="cursor"></span></div>
-    </div>
-    <div id="chapters"></div>
-    <div class="empty" id="empty">
-      <div class="big-wrap"><span class="big-ring r1"></span><span class="big-ring r2"></span><div class="big">🎙️</div></div>
-      <div id="t-empty">Transcribe live, split into chapters, recap<br>and suggest smart questions as you go!</div>
-      <div class="feats">
-        <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h6"/></svg><span id="t-featChap">Chapters</span></span>
-        <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg><span id="t-featAI">AI recaps</span></span>
-        <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg><span id="t-featAsk">Ask anything</span></span>
+  <div class="workspace" id="workspace">
+    <!-- LEFT PANE: chapter recaps + overview (with jump links to transcript) -->
+    <aside class="pane pane-left" id="paneLeft">
+      <div class="pane-hd"><span id="t-paneRecaps">📋 Recaps</span><span class="hint" id="t-paneRecapsHint">chapters &amp; overview</span></div>
+      <div class="pane-scroll" id="leftScroll">
+        <div class="overview" id="overview"></div>
+        <div id="chapters"></div>
+        <div class="empty" id="empty">
+          <div class="big-wrap"><span class="big-ring r1"></span><span class="big-ring r2"></span><div class="big">🎙️</div></div>
+          <div id="t-empty">Transcribe live, split into chapters, recap<br>and suggest smart questions as you go!</div>
+          <div class="feats">
+            <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h6"/></svg><span id="t-featChap">Chapters</span></span>
+            <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg><span id="t-featAI">AI recaps</span></span>
+            <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg><span id="t-featAsk">Ask anything</span></span>
+          </div>
+        </div>
       </div>
+    </aside>
+
+    <!-- RIGHT COLUMN: top (recapped transcript) + center (live) -->
+    <div class="pane-col">
+      <!-- TOP PANE: already-recapped transcript sections (committed chapters) -->
+      <section class="pane pane-top" id="paneTop">
+        <div class="pane-hd"><span id="t-paneRecapped">📚 Recapped transcript</span><span class="hint" id="t-paneRecappedHint">committed sections</span></div>
+        <div class="pane-scroll" id="topScroll">
+          <div class="pane-empty-hint" id="topEmptyHint">No recapped sections yet — keep talking and chapters will appear here automatically.</div>
+        </div>
+      </section>
+
+      <!-- CENTER PANE: live transcription tail -->
+      <section class="pane pane-live live" id="liveCard">
+        <div class="pane-hd"><span class="bd"></span> <span id="t-paneLive">🔴 Live transcript</span><span class="hint" id="t-paneLiveHint">running</span></div>
+        <div class="txt" id="liveTxt"><span class="cursor"></span></div>
+        <div class="as-pause" id="asPause" role="button" tabindex="0" aria-label="Resume auto-scroll"></div>
+      </section>
     </div>
   </div>
 
@@ -437,19 +561,50 @@
     <div class="seg" id="keyProviderTabs" style="margin-bottom:14px">
       <button data-v="anthropic"><b>Claude</b><span>Anthropic</span></button>
       <button data-v="glm"><b>GLM</b><span>Zhipu AI</span></button>
+      <button data-v="ollama"><b>Ollama</b><span>Local · Gemma</span></button>
     </div>
-    <div class="sub" id="t-keySub">Paste your Anthropic API key to generate recaps and smart questions with Claude. It is stored only in this browser and sent only to Anthropic.</div>
-    <div class="mstatus off" id="keyStatus"></div>
-    <div class="keyrow">
-      <input id="keyInput" type="password" placeholder="sk-ant-..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      <button class="eye" id="keyEye" title="Show / hide">👁</button>
+    <!-- API-key panel: shown for Anthropic and GLM only -->
+    <div id="keyApiKeyPanel">
+      <div class="sub" id="t-keySub">Paste your Anthropic API key to generate recaps and smart questions with Claude. It is stored only in this browser and sent only to Anthropic.</div>
+      <div class="mstatus off" id="keyStatus"></div>
+      <div class="keyrow">
+        <input id="keyInput" type="password" placeholder="sk-ant-..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button class="eye" id="keyEye" title="Show / hide">👁</button>
+      </div>
+      <div class="mbtns">
+        <button class="mbtn save" id="keySave" data-t="save">Save</button>
+        <button class="mbtn danger" id="keyClear" data-t="clear">Remove</button>
+        <button class="mbtn ghostb" id="keyClose" data-t="close">Close</button>
+      </div>
+      <div class="mnote" id="t-keyNote"><b>Keep it private:</b> a key stored in a browser can be read by anyone using this device. Use a key limited to this purpose and remove it when finished. Get a key at <a class="mlink" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</div>
     </div>
-    <div class="mbtns">
-      <button class="mbtn save" id="keySave" data-t="save">Save</button>
-      <button class="mbtn danger" id="keyClear" data-t="clear">Remove</button>
-      <button class="mbtn ghostb" id="keyClose" data-t="close">Close</button>
+    <!-- Ollama panel: endpoint + model + run/shutdown instructions + connection test.
+         Shown only when the Ollama tab is active. -->
+    <div id="keyOllamaPanel" style="display:none">
+      <div class="sub" id="t-ollamaSub">Ollama runs locally on your machine — no API key needed.</div>
+      <div class="mstatus off" id="ollamaStatus"></div>
+      <div class="ollama-block">
+        <div class="ob-title"><span class="dot"></span><span id="t-ollamaSetupTitle">Run Ollama locally</span></div>
+        <div class="ob-sub" id="t-ollamaSetupSub">Ollama is a free, open-source model server. Start it once before using this provider.</div>
+        <div id="t-ollamaStep1">1) Install Ollama from ollama.com (macOS / Windows / Linux). On Linux you can also run:</div>
+        <code>curl -fsSL https://ollama.com/install.sh | sh</code>
+        <div id="t-ollamaStep2">2) Pull the Gemma model (first time only — downloads a few GB):</div>
+        <code>ollama pull gemma3</code>
+        <div id="t-ollamaStep3">3) Start the Ollama server (keeps running in the background):</div>
+        <code>ollama serve</code>
+        <div id="t-ollamaStep4">4) Set endpoint and model below, then test the connection.</div>
+        <div class="ob-row"><label id="t-ollamaEndpoint">Endpoint</label><input id="ollamaEndpointInput" type="text" placeholder="http://localhost:11434" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>
+        <div class="ob-row"><label id="t-ollamaModel">Model</label><input id="ollamaModelInput" type="text" placeholder="gemma3" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>
+        <button class="ob-probe" id="ollamaProbe" data-t="ollamaProbe">Test connection</button>
+        <div style="margin-top:12px;font-size:11px;font-weight:800;letter-spacing:.4px;color:var(--gold)" id="t-ollamaStopTitle">To shut it down later:</div>
+        <div style="font-size:11px;color:var(--mut);line-height:1.5;margin-top:3px" id="t-ollamaStopHint">On Windows / macOS: click the Ollama tray icon → Quit Ollama. On Linux: stop the service or kill the process.</div>
+        <div style="font-size:10px;color:var(--mut);margin-top:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">Linux stop: <span style="color:#cfe3ff;user-select:all">pkill ollama</span> &nbsp;or&nbsp; <span style="color:#cfe3ff;user-select:all">sudo systemctl stop ollama</span></div>
+      </div>
+      <div class="mbtns">
+        <button class="mbtn save" id="ollamaSave" data-t="save">Save</button>
+        <button class="mbtn ghostb" id="ollamaClose" data-t="close">Close</button>
+      </div>
     </div>
-    <div class="mnote" id="t-keyNote"><b>Keep it private:</b> a key stored in a browser can be read by anyone using this device. Use a key limited to this purpose and remove it when finished. Get a key at <a class="mlink" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>.</div>
   </div>
 </div>
 
@@ -516,49 +671,22 @@
       <div class="seg" id="setProvider">
         <button data-v="anthropic"><b>Claude</b><span id="t-pAnthropicS">Anthropic</span></button>
         <button data-v="glm"><b>GLM</b><span id="t-pGlmS">Zhipu AI</span></button>
-        <button data-v="ollama"><b>Ollama</b><span id="t-pOllamaS">Local</span></button>
+        <button data-v="ollama"><b>Ollama</b><span id="t-pOllamaS">Local · Gemma</span></button>
       </div>
     </div>
-    <div id="cloudModelGroup">
-      <div class="set-group">
-        <div class="set-label" id="t-setModel">Model tier <span class="set-hint" id="t-setModelHint">(used when an API key is active)</span></div>
-        <div class="seg seg3" id="setModel">
-          <button data-v="fast"><b id="t-mFast">Fast</b><span id="t-mFastS">Haiku · cheapest</span></button>
-          <button data-v="balanced"><b id="t-mBal">Balanced</b><span id="t-mBalS">Sonnet</span></button>
-          <button data-v="advanced"><b id="t-mAdv">Advanced</b><span id="t-mAdvS">Opus · priciest</span></button>
-        </div>
-      </div>
-      <div class="set-group">
-        <button class="keyrowbtn" id="setKeyBtn">
-          <span id="t-setKeyLbl">Manage API key</span>
-          <span class="mstatus-mini" id="setKeyStatus"></span>
-        </button>
+    <div class="set-group">
+      <div class="set-label" id="t-setModel">Model tier <span class="set-hint" id="t-setModelHint">(used when an API key is active)</span></div>
+      <div class="seg seg3" id="setModel">
+        <button data-v="fast"><b id="t-mFast">Fast</b><span id="t-mFastS">Haiku · cheapest</span></button>
+        <button data-v="balanced"><b id="t-mBal">Balanced</b><span id="t-mBalS">Sonnet</span></button>
+        <button data-v="advanced"><b id="t-mAdv">Advanced</b><span id="t-mAdvS">Opus · priciest</span></button>
       </div>
     </div>
-    <div id="ollamaGroup" style="display:none">
-      <div class="set-group">
-        <div class="set-label" id="t-setOllamaSize">Model size <span class="set-hint" id="t-setOllamaSizeHint">(must be pulled in Ollama first)</span></div>
-        <div class="seg seg3" id="setOllamaTier">
-          <button data-v="fast"><b id="t-oFast">Fast</b><span id="t-oFastS">gemma3:4b</span></button>
-          <button data-v="balanced"><b id="t-oBal">Balanced</b><span id="t-oBalS">gemma3:12b</span></button>
-          <button data-v="advanced"><b id="t-oAdv">Advanced</b><span id="t-oAdvS">gemma3:27b</span></button>
-        </div>
-      </div>
-      <div class="set-group">
-        <div class="set-label" id="t-setOllamaModel">Model name</div>
-        <input id="ollamaModelInput" class="textin" type="text" placeholder="gemma3:4b" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      </div>
-      <div class="set-group">
-        <div class="set-label" id="t-setOllamaUrl">Server address</div>
-        <input id="ollamaUrlInput" class="textin" type="text" placeholder="http://localhost:11434" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-      </div>
-      <div class="set-group">
-        <button class="keyrowbtn" id="ollamaTestBtn">
-          <span id="t-ollamaTestLbl">Test connection</span>
-          <span class="mstatus-mini" id="ollamaTestStatus"></span>
-        </button>
-      </div>
-      <div class="mnote" id="t-ollamaNote">Runs entirely on your machine — no API key, nothing leaves your computer. Requires Ollama running locally with <code>OLLAMA_ORIGINS</code> allowing this page. See the setup note below.</div>
+    <div class="set-group">
+      <button class="keyrowbtn" id="setKeyBtn">
+        <span id="t-setKeyLbl">Manage API key</span>
+        <span class="mstatus-mini" id="setKeyStatus"></span>
+      </button>
     </div>
     <div class="mbtns"><button class="mbtn ghostb" id="setClose" data-t="close">Close</button></div>
   </div>
@@ -586,8 +714,8 @@
       <button class="mbtn save" id="ctxSave" data-t="save">Save</button>
       <button class="mbtn ghostb" id="ctxClose" data-t="close">Close</button>
     </div>
-    <input type="file" id="ctxFileInput" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.md,.csv,.json,.html,.htm,.xml,.rtf" style="display:none">
-    <div class="mnote" id="t-ctxNote">Text from .txt/.md/.csv/.json/.html files is read and included. Other formats (PDF, Word, PowerPoint) attach by name only — paste key text into the box above for best results.</div>
+    <input type="file" id="ctxFileInput" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log,.htm,.html,.xml,.yaml,.yml,.rtf,.srt,.vtt,.tex,.ini,.conf,.js,.ts,.py,.css,.pdf,.docx,.pptx,text/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation" style="display:none">
+    <div class="mnote" id="t-ctxNote">PDF, Word (.docx) and PowerPoint (.pptx) files are parsed in the browser and their text is added to the prompt — together with .txt/.md/.csv/.json/.html. Content is available for recaps and questions as soon as you save, even before transcribing.</div>
   </div>
 </div>
 
@@ -637,36 +765,59 @@
    call through your own backend instead of shipping the key to the browser.
    ============================================================ */
 const KEY_STORE={anthropic:"cc_anthropic_key", glm:"cc_glm_key"};
-function getApiKey(provider){ try{ return localStorage.getItem(KEY_STORE[provider||settings.provider])||""; }catch(e){ return ""; } }
-function setApiKey(k,provider){ try{ const s=KEY_STORE[provider||settings.provider]; k?localStorage.setItem(s,k):localStorage.removeItem(s); }catch(e){} }
-function keyLooksValid(k,provider){ return (provider||settings.provider)==="anthropic" ? /^sk-/.test(k) : k.trim().length>=8; }
+/* Ollama doesn't need an API key — it runs locally — but we still let the user
+   configure its endpoint URL (default http://localhost:11434) and the model
+   name to pull (default "gemma3"). Both are persisted separately. */
+const OLLAMA_ENDPOINT_STORE="cc_ollama_endpoint";
+const OLLAMA_MODEL_STORE="cc_ollama_model";
+const DEFAULT_OLLAMA_ENDPOINT="http://localhost:11434";
+const DEFAULT_OLLAMA_MODEL="gemma3";
+function getOllamaEndpoint(){ try{ return localStorage.getItem(OLLAMA_ENDPOINT_STORE)||DEFAULT_OLLAMA_ENDPOINT; }catch(e){ return DEFAULT_OLLAMA_ENDPOINT; } }
+function setOllamaEndpoint(v){ try{ const s=(v||"").trim()||DEFAULT_OLLAMA_ENDPOINT; localStorage.setItem(OLLAMA_ENDPOINT_STORE,s); }catch(e){} }
+function getOllamaModel(){ try{ return localStorage.getItem(OLLAMA_MODEL_STORE)||DEFAULT_OLLAMA_MODEL; }catch(e){ return DEFAULT_OLLAMA_MODEL; } }
+function setOllamaModel(v){ try{ const s=(v||"").trim()||DEFAULT_OLLAMA_MODEL; localStorage.setItem(OLLAMA_MODEL_STORE,s); }catch(e){} }
+function getApiKey(provider){ try{ const p=provider||settings.provider; if(p==="ollama")return ""; return localStorage.getItem(KEY_STORE[p])||""; }catch(e){ return ""; } }
+function setApiKey(k,provider){ try{ const p=provider||settings.provider; if(p==="ollama")return; const s=KEY_STORE[p]; k?localStorage.setItem(s,k):localStorage.removeItem(s); }catch(e){} }
+function keyLooksValid(k,provider){
+  const p=provider||settings.provider;
+  if(p==="ollama")return true;                       // local server — no key required
+  if(p==="anthropic")return /^sk-/.test(k||"");
+  return (k||"").trim().length>=8;                   // GLM etc.
+}
 
 /* ---------- User settings (model / recap detail / #questions / chapter length / languages) ---------- */
 /* Three providers, each with three cost/quality tiers. The tier concept (Fast /
    Balanced / Advanced) is shared in the UI; only the underlying model id and
-   the API key (or, for Ollama, the local server address) differ by provider.
-   Ollama's "tiers" are just convenient Gemma size presets — the person can
-   override the exact model name freely since it depends on what they've
-   actually pulled locally. */
+   the API key/endpoint differ by provider. For Ollama the three tiers map to
+   small / medium / large Gemma variants so the user can pick a size that fits
+   their hardware. */
 const MODELS={
   anthropic:{ fast:"claude-haiku-4-5-20251001", balanced:"claude-sonnet-4-6", advanced:"claude-opus-4-8" },
   glm:      { fast:"glm-4.5-air",               balanced:"glm-4.6",          advanced:"glm-5.1" },
-  ollama:   { fast:"gemma3:4b",                 balanced:"gemma3:12b",       advanced:"gemma3:27b" }
+  ollama:   { fast:"gemma3:1b",                 balanced:"gemma3",           advanced:"gemma3:12b" }
 };
 const PROVIDERS=["anthropic","glm","ollama"];
 const TIERS=["fast","balanced","advanced"];
-const OLLAMA_DEFAULT_URL="http://localhost:11434";
+/* The "balanced" tier for Ollama follows the user-configured model name
+   (default gemma3) so users can switch to e.g. "gemma2", "gemma3:4b" etc. via
+   the Settings panel without editing tiers. The fast/advanced tiers stay as
+   sensible small/large defaults. */
+function ollamaTierModel(tier){
+  if(tier==="fast")return MODELS.ollama.fast;
+  if(tier==="advanced")return MODELS.ollama.advanced;
+  return getOllamaModel()||DEFAULT_OLLAMA_MODEL;
+}
 /* Recap-detail presets drive both the Claude prompts and the on-device fallback. */
 const VERB={
   short: {recapPhrase:"1 short sentence", ovPhrase:"1 short sentence", secPhrase:"a brief phrase", qPhrase:"short and direct (max ~10 words each)", recapLen:90,  ovLen:110, secLen:90,  sents:1, pts:3},
   medium:{recapPhrase:"1-2 sentences",    ovPhrase:"2 sentences",      secPhrase:"1 concise sentence", qPhrase:"concise",                        recapLen:150, ovLen:170, secLen:130, sents:2, pts:4},
   long:  {recapPhrase:"3-4 sentences",    ovPhrase:"4-5 sentences",    secPhrase:"2-3 sentences",      qPhrase:"detailed and probing",            recapLen:320, ovLen:360, secLen:270, sents:4, pts:5}
 };
-const SET_STORE={model:"cc_model",provider:"cc_provider",verb:"cc_verb",chap:"cc_chaplen",speech:"cc_speech",out:"cc_out",nq:"cc_nq",split:"cc_split",ollamaUrl:"cc_ollama_url",ollamaModel:"cc_ollama_model"};
+const SET_STORE={model:"cc_model",provider:"cc_provider",verb:"cc_verb",chap:"cc_chaplen",speech:"cc_speech",out:"cc_out",nq:"cc_nq",split:"cc_split"};
 const CHAP_OPTS=[100,200,300,400,500,1000];
 const NQ_OPTS=[0,1,2,3];
 const OLD_MODEL_MAP={haiku:"fast",sonnet:"balanced",opus:"advanced"};  // migrate pre-multi-provider values
-let settings={provider:"anthropic",model:"fast",verb:"short",chap:100,speech:"en",out:"en",nq:3,split:true,ollamaUrl:OLLAMA_DEFAULT_URL,ollamaModel:""};
+let settings={provider:"anthropic",model:"fast",verb:"short",chap:100,speech:"en",out:"en",nq:3,split:true};
 function loadSettings(){
   try{
     const p=localStorage.getItem(SET_STORE.provider); if(PROVIDERS.includes(p))settings.provider=p;
@@ -678,8 +829,6 @@ function loadSettings(){
     const o=localStorage.getItem(SET_STORE.out); if(o==="en"||o==="it")settings.out=o;
     const n=parseInt(localStorage.getItem(SET_STORE.nq),10); if(NQ_OPTS.includes(n))settings.nq=n;
     const sp=localStorage.getItem(SET_STORE.split); if(sp==="0"||sp==="1")settings.split=(sp==="1");
-    const ou=localStorage.getItem(SET_STORE.ollamaUrl); if(ou)settings.ollamaUrl=ou;
-    const om=localStorage.getItem(SET_STORE.ollamaModel); if(om)settings.ollamaModel=om;
   }catch(e){}
   uiLang=settings.out;
   applyChapterLen(settings.chap);
@@ -698,119 +847,143 @@ function contextBlock(){
   if(context.objective&&context.objective.trim())parts.push("Objective: "+context.objective.trim());
   (context.files||[]).forEach(f=>parts.push(f.text?`Document "${f.name}":\n${f.text}`:`Attached file (not parsed): ${f.name}`));
   let out=parts.join("\n\n").trim();
-  if(out.length>7000)out=out.slice(0,7000)+"…";
+  if(out.length>24000)out=out.slice(0,24000)+"…";
   return out;
 }
 
-/* ---------- Client-side document text extraction (PDF / Word / PowerPoint) ----------
-   Libraries load lazily from cdnjs on first use, so the app stays light until someone
-   actually attaches an office document. Everything happens in the browser — files are
-   never uploaded anywhere. */
-function loadScript(src){
-  return new Promise((resolve,reject)=>{
-    const s=document.createElement("script");
-    s.src=src; s.onload=resolve; s.onerror=()=>reject(new Error("Failed to load "+src));
-    document.head.appendChild(s);
-  });
-}
-let _jszipReady=null;
-function ensureJSZip(){
-  if(window.JSZip)return Promise.resolve(window.JSZip);
-  if(!_jszipReady)_jszipReady=loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js").then(()=>window.JSZip);
-  return _jszipReady;
-}
-let _pdfjsReady=null;
-function ensurePdfjs(){
-  if(window.pdfjsLib)return Promise.resolve(window.pdfjsLib);
-  if(!_pdfjsReady)_pdfjsReady=loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js").then(()=>{
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    return window.pdfjsLib;
-  });
-  return _pdfjsReady;
-}
-function xmlTextNodes(xml,tag){
-  const re=new RegExp("<"+tag+"(?:\\s[^>]*)?>([^<]*)</"+tag+">","g");
-  const out=[]; let m;
-  while((m=re.exec(xml)))out.push(m[1]);
-  return out;
-}
-function decodeXmlEntities(s){
-  return s.replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&apos;/g,"'");
-}
-async function extractPdfText(arrayBuffer){
-  const pdfjsLib=await ensurePdfjs();
-  const pdf=await pdfjsLib.getDocument({data:arrayBuffer}).promise;
+/* ---------- Document text extraction (PDF / Word / PowerPoint / text) ----------
+   All parsing happens in the browser — no file ever leaves the device.
+   - PDF → pdf.js (Mozilla), reads every page's text items.
+   - .docx → mammoth.js, converts to plain text.
+   - .pptx → JSZip + minimal XML scraping of ppt/slides/slideN.xml (pulls text
+            out of <a:t> runs, which is where PowerPoint stores visible text).
+   - Older binary .doc/.ppt are NOT supported by these libs — they attach by
+     name only and the user is invited to paste the relevant text manually. */
+const TEXTY_EXT=/\.(txt|md|markdown|mdown|csv|tsv|json|jsonl|log|html?|xml|yaml|yml|rtf|srt|vtt|tex|ini|conf|js|ts|py|css)$/i;
+const PDF_EXT=/\.pdf$/i;
+const DOCX_EXT=/\.docx$/i;
+const PPTX_EXT=/\.pptx$/i;
+
+/* Truncate per-document text so a single huge PDF can't blow the localStorage
+   budget or the LLM context window. 20k chars ≈ 3-4k tokens, plenty for
+   grounding recaps and questions. */
+const MAX_DOC_CHARS=20000;
+
+async function extractTextFromPdf(file){
+  if(!window.pdfjsLib)throw new Error("PDF library not loaded yet — try again in a moment.");
+  const buf=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
   const parts=[];
-  const maxPages=Math.min(pdf.numPages,40);   // keep extraction + prompt size sane for very long PDFs
+  const maxPages=Math.min(pdf.numPages, 60);   // safety cap
   for(let i=1;i<=maxPages;i++){
     const page=await pdf.getPage(i);
     const content=await page.getTextContent();
-    parts.push(content.items.map(it=>it.str).join(" "));
+    const text=content.items.map(it=>it.str||"").join(" ").replace(/\s+/g," ").trim();
+    if(text)parts.push(text);
   }
-  return parts.join("\n\n").replace(/[ \t]+/g," ").trim();
+  return parts.join("\n\n");
 }
-async function extractDocxText(arrayBuffer){
-  const JSZip=await ensureJSZip();
-  const zip=await JSZip.loadAsync(arrayBuffer);
-  const entry=zip.file("word/document.xml");
-  if(!entry)return "";
-  const xml=await entry.async("string");
-  const paras=xml.split(/<\/w:p>/).map(p=>xmlTextNodes(p,"w:t").map(decodeXmlEntities).join("")).filter(Boolean);
-  return paras.join("\n").trim();
-}
-async function extractPptxText(arrayBuffer){
-  const JSZip=await ensureJSZip();
-  const zip=await JSZip.loadAsync(arrayBuffer);
-  const names=Object.keys(zip.files)
-    .filter(n=>/^ppt\/slides\/slide\d+\.xml$/.test(n))
-    .sort((a,b)=>(+a.match(/slide(\d+)\.xml/)[1])-(+b.match(/slide(\d+)\.xml/)[1]));
-  const slides=[];
-  for(const n of names){
-    const xml=await zip.file(n).async("string");
-    slides.push(xmlTextNodes(xml,"a:t").map(decodeXmlEntities).join(" "));
-  }
-  return slides.map((t,i)=>`Slide ${i+1}: ${t}`).join("\n").trim();
-}
-/* Route a File to the right extractor by extension. Returns "" for plain text
-   formats (handled separately by reading the file as text) or anything unsupported. */
-async function extractFileText(file){
-  const name=file.name.toLowerCase();
+async function extractTextFromDocx(file){
+  if(!window.mammoth)throw new Error("Word library not loaded yet — try again in a moment.");
   const buf=await file.arrayBuffer();
-  if(name.endsWith(".pdf"))return await extractPdfText(buf);
-  if(name.endsWith(".docx"))return await extractDocxText(buf);
-  if(name.endsWith(".pptx"))return await extractPptxText(buf);
-  return "";
+  const result=await window.mammoth.extractRawText({arrayBuffer:buf});
+  return (result&&result.value?result.value:"").replace(/\r/g,"").replace(/\n{3,}/g,"\n\n").trim();
+}
+async function extractTextFromPptx(file){
+  if(!window.JSZip)throw new Error("PowerPoint library not loaded yet — try again in a moment.");
+  const buf=await file.arrayBuffer();
+  const zip=await window.JSZip.loadAsync(buf);
+  // Slide text lives in ppt/slides/slide1.xml ... slideN.xml. Sort numerically.
+  const slideNames=Object.keys(zip.files)
+    .filter(n=>/^ppt\/slides\/slide\d+\.xml$/i.test(n))
+    .sort((a,b)=>{const na=parseInt(a.match(/slide(\d+)\.xml/)[1],10),nb=parseInt(b.match(/slide(\d+)\.xml/)[1],10);return na-nb;});
+  const parts=[];
+  for(const name of slideNames){
+    const xml=await zip.files[name].async("string");
+    // Every visible text run is wrapped in <a:t>…</a:t>. Join runs with a
+    // space, separate paragraphs/blocks with newlines.
+    const runs=[...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map(m=>m[1]);
+    const decoded=runs.map(r=>r.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&apos;/g,"'"));
+    const slideText=decoded.join(" ").replace(/\s+/g," ").trim();
+    if(slideText)parts.push("Slide: "+slideText);
+  }
+  return parts.join("\n\n");
+}
+
+/* Dispatch a file to the right parser based on extension. Returns {text, parseError}.
+   - parseError is null on success or a short human message (also non-fatal: the
+     file still attaches by name so the user knows something was added). */
+async function extractFileText(file){
+  const name=file.name||"";
+  try{
+    if(PDF_EXT.test(name))return {text:(await extractTextFromPdf(file)).slice(0,MAX_DOC_CHARS), parseError:null, kind:"pdf"};
+    if(DOCX_EXT.test(name))return {text:(await extractTextFromDocx(file)).slice(0,MAX_DOC_CHARS), parseError:null, kind:"docx"};
+    if(PPTX_EXT.test(name))return {text:(await extractTextFromPptx(file)).slice(0,MAX_DOC_CHARS), parseError:null, kind:"pptx"};
+    if(TEXTY_EXT.test(name)||/^text\//.test(file.type)||/json|xml|csv/.test(file.type)){
+      const t=await file.text();
+      return {text:t.slice(0,MAX_DOC_CHARS), parseError:null, kind:"text"};
+    }
+  }catch(err){
+    return {text:"", parseError:(err&&err.message)||"parse failed", kind:"unknown"};
+  }
+  return {text:"", parseError:null, kind:"unsupported"};
 }
 
 const LLM = {
   get model(){
-    if(settings.provider==="ollama")return (settings.ollamaModel&&settings.ollamaModel.trim())||MODELS.ollama[settings.model];
-    return (MODELS[settings.provider]||MODELS.anthropic)[settings.model]||MODELS.anthropic.balanced;
+    const p=settings.provider;
+    if(p==="ollama")return ollamaTierModel(settings.model);
+    return (MODELS[p]||MODELS.anthropic)[settings.model]||MODELS.anthropic.balanced;
   },
-  get ollamaUrl(){ return (settings.ollamaUrl&&settings.ollamaUrl.trim())||OLLAMA_DEFAULT_URL; },
-  get hasKey(){ return keyLooksValid(getApiKey(), settings.provider); },
+  get hasKey(){
+    // Ollama has no key — it's "ready" as long as an endpoint is set (always true).
+    return keyLooksValid(getApiKey(), settings.provider);
+  },
   get hasArtifact(){ return settings.provider==="anthropic" && typeof window!=="undefined" && window.claude && typeof window.claude.complete==="function"; },
-  // Ollama needs no key — it's "ready" whenever it's the selected provider, since
-  // there's always a server address (defaulted) to try. Reachability is checked
-  // live by the request itself (and proactively via the Settings "Test connection").
-  get enabled(){ return settings.provider==="ollama" || this.hasKey || this.hasArtifact; },
+  get enabled(){ return this.hasKey || this.hasArtifact; },
 
   // Low-level: send system+user, return raw text (or null if no LLM available).
   async _raw(system, user, maxTokens){
-    if(settings.provider==="ollama"){
+    if(settings.provider==="ollama" && this.hasKey){
+      // Pre-flight: probe the local server AND confirm the configured model is
+      // installed. Throws a tagged error (OLLAMA_DOWN / OLLAMA_MODEL_MISSING)
+      // before we even issue the chat request — otherwise the fetch can hang
+      // for 30+ seconds on a cold/dead server and the recap silently falls
+      // back to the on-device version with no signal that Ollama failed.
+      await ensureOllamaReady();
+      // Ollama local chat API: POST {endpoint}/api/chat with a messages array.
+      // Runs on the user's machine; no auth header. The "stream:false" flag
+      // makes the call return a single JSON object instead of NDJSON chunks.
+      const ep=getOllamaEndpoint().replace(/\/+$/,"");
+      // Long timeout: Gemma3 can take 30-60s to cold-start on the first call
+      // after `ollama serve` boots, especially on CPU-only machines. 120s
+      // gives plenty of headroom while still failing eventually.
+      const ctrl=new AbortController();
+      const t=setTimeout(()=>ctrl.abort(),120000);
       let resp;
       try{
-        resp=await fetch(this.ollamaUrl.replace(/\/+$/,"")+"/api/chat",{
+        resp=await fetch(ep+"/api/chat",{
           method:"POST",
           headers:{"content-type":"application/json"},
-          body:JSON.stringify({model:this.model,stream:false,messages:[{role:"system",content:system},{role:"user",content:user}]})
+          body:JSON.stringify({
+            model:this.model,
+            stream:false,
+            messages:[{role:"system",content:system},{role:"user",content:user}],
+            options:{ num_predict: maxTokens||800 }
+          }),
+          signal:ctrl.signal
         });
       }catch(e){
-        throw new Error("OLLAMA_UNREACHABLE");
+        clearTimeout(t);
+        // Server went away mid-call (e.g. user killed `ollama serve`) or the
+        // request timed out. Surface as OLLAMA_DOWN so the same toast path
+        // fires and the user gets a clear remediation hint.
+        throw new Error("OLLAMA_DOWN");
       }
-      if(!resp.ok)throw new Error("API "+resp.status+" "+(await resp.text().catch(()=>"")));
+      clearTimeout(t);
+      if(!resp.ok)throw new Error("Ollama API "+resp.status+" "+(await resp.text().catch(()=>"")));
       const data=await resp.json();
-      return (data.message&&data.message.content)||"";
+      return (data && data.message && data.message.content) || "";
     }
     if(this.hasKey){
       if(settings.provider==="glm"){
@@ -905,20 +1078,17 @@ const I18N={
     keyTitle:"Connect an AI provider",
     keySubAnthropic:"Paste your Anthropic API key to generate recaps and smart questions with Claude. It is stored only in this browser and sent only to Anthropic.",
     keySubGlm:"Paste your GLM (Zhipu AI) API key to generate recaps and smart questions with GLM. It is stored only in this browser and sent only to Zhipu AI.",
+    keySubOllama:"Ollama runs locally on your machine — no API key needed. Start the server (see instructions below), set the endpoint and model name, then test the connection.",
     keyNoteAnthropic:"<b>Keep it private:</b> a key stored in a browser can be read by anyone using this device. Use a key limited to this purpose and remove it when finished. Get a key at <a class='mlink' href='{link}' target='_blank' rel='noopener'>{linkLabel}</a>.",
     keyNoteGlm:"<b>Keep it private:</b> a key stored in a browser can be read by anyone using this device. Use a key limited to this purpose and remove it when finished. Get a key at <a class='mlink' href='{link}' target='_blank' rel='noopener'>{linkLabel}</a>.",
     save:"Save",clear:"Remove",close:"Close",connected:"● Connected",artifactOn:"● Connected via Claude app",notConnected:"○ Not connected — using on-device fallback",
+    ollamaConnected:"● Ollama reachable",ollamaNotConnected:"○ Ollama not reachable — start the server first",
     keyMiniOn:"● Connected",keyMiniOff:"○ Not connected",
     keySaved:"Key saved",keyRemoved:"Key removed",keyBad:"That doesn't look like a valid key for this provider",
     setTitle:"Settings",setProvider:"Provider",setModel:"Model tier",setModelHint:"(used when an API key is active)",setKeyLbl:"Manage API key",
     mFast:"Fast",mFastS:"Haiku · cheapest",mBal:"Balanced",mBalS:"Sonnet",mAdv:"Advanced",mAdvS:"Opus · priciest",
     mFastSGlm:"GLM-4.5-Air · cheapest",mBalSGlm:"GLM-4.6",mAdvSGlm:"GLM-5.1 · priciest",
-    oFast:"Fast",oFastS:"gemma3:4b",oBal:"Balanced",oBalS:"gemma3:12b",oAdv:"Advanced",oAdvS:"gemma3:27b",ollamaLocal:"Local",
-    setOllamaSize:"Model size",setOllamaSizeHint:"(must be pulled in Ollama first)",
-    setOllamaModel:"Model name",setOllamaUrl:"Server address",ollamaTestLbl:"Test connection",
-    ollamaNote:"Runs entirely on your machine — no API key, nothing leaves your computer. Requires Ollama running locally with <code>OLLAMA_ORIGINS</code> allowing this page. See the setup note below.",
-    ollamaTesting:"Checking…",ollamaOk:"● Connected",ollamaOkEmpty:"● Connected — no models pulled yet",ollamaFail:"○ Can't reach the server",
-    ollamaUnreachableMsg:"Can't reach Ollama. Make sure it's running locally and that OLLAMA_ORIGINS allows this page, then try again.",
+    mFastSOllama:"Gemma3 1B · smallest",mBalSOllama:"Gemma3 (configured)",mAdvSOllama:"Gemma3 12B · largest",
     setVerb:"Recap & questions detail",vShort:"Short",vMed:"Medium",vLong:"Long",
     setChap:"Typical chapter length",setChapHint:"(words)",saved:"Settings saved",
     setSpeech:"Spoken language",setSpeechHint:"(transcription)",setOut:"Recap & questions language",
@@ -931,13 +1101,33 @@ const I18N={
     actCopy:"Copy",actShare:"Forward",actTxt:".txt",recapCopied:"Recap copied",recapShared:"Shared",recapSaved:"Recap saved (.txt)",
     setVerbLbl:"Recap detail",setNq:"Smart questions",setNqHint:"(per recap/chapter)",
     ctxTitle:"Conversation context",ctxSub:"Describe the goal of the conversation and attach documents to discuss. This is added to the start of the prompt to guide recaps and questions.",
-    ctxNote:"Text from .txt/.md/.csv/.json/.html files is read directly. PDF, Word (.docx) and PowerPoint (.pptx) files are parsed in your browser so their content is used too. Other formats attach by name only.",
+    ctxNote:"PDF, Word (.docx) and PowerPoint (.pptx) files are parsed in the browser and their text is added to the prompt — together with .txt/.md/.csv/.json/.html. Content is available for recaps and questions as soon as you save, even before transcribing.",
     attach:"Attach files",ctxSaved:"Context saved",ctxOn:"● Context set",
-    ctxParsing:"Reading…",ctxParseErr:"Couldn't read this file",ctxNameOnly:"name only",
+    ctxAttached:"{n} file(s) attached",ctxParseFailed:"Couldn't parse {n} file(s) — attached by name only",
+    ollamaSetupTitle:"Run Ollama locally",
+    ollamaSetupSub:"Ollama is a free, open-source model server that runs on your machine. Start it once before using this provider. Recommended model: gemma3 (Google Gemma 3).",
+    ollamaStep1:"1) Install Ollama from ollama.com (macOS / Windows / Linux). On Linux you can also run:",
+    ollamaStep2:"2) Pull the Gemma model (first time only — downloads a few GB):",
+    ollamaStep3:"3) Start the Ollama server (keeps running in the background):",
+    ollamaStep4:"4) Come back here, set the endpoint (default http://localhost:11434) and model name, then tap Test connection.",
+    ollamaStopTitle:"To shut it down later:",
+    ollamaStopHint:"On Windows / macOS: click the Ollama tray icon → Quit Ollama.",
+    ollamaEndpoint:"Endpoint",ollamaModel:"Model",
+    ollamaProbe:"Test connection",ollamaProbeOk:"Ollama reachable ✓",ollamaProbeErr:"Ollama not reachable — is the server running?",
+    ollamaProbeChecking:"Checking…",
+    ollamaProbeModelMissing:"○ Model not installed — run: ollama pull gemma3",
+    ollamaErrServer:"Ollama not reachable. Start it (\"ollama serve\") and retry.",
+    ollamaErrModel:"Model \"{m}\" not installed. Run: ollama pull {m}",
+    ollamaRetrying:"Ollama warming up, retrying…",
+    autoScrollPaused:"Auto-scroll paused",autoScrollResume:"Tap to resume",autoScrollMissed:"{n} new",
+    paneRecaps:"Recaps",paneRecapsHint:"chapters & overview",
+    paneRecapped:"Recapped transcript",paneRecappedHint:"committed sections",
+    paneLive:"Live transcript",paneLiveHint:"running",
+    topEmptyHint:"No recapped sections yet — keep talking and chapters will appear here automatically.",
     histTitle:"Saved sessions",noSessions:"No saved sessions yet.",sessionSaved:"Session saved",sessionDeleted:"Session deleted",sessionLoaded:"Session loaded",confirmDelete:"Delete this session?",
     open:"Open",del:"Delete",untitled:"Untitled session",
-    askTitle:"Ask the transcript",askSub:"Ask anything about what was said. Answers use the transcript and your context via Claude.",
-    askThinking:"Thinking…",askNoLLM:"Connect Claude (key 🔑) to ask questions.",askEmptyTr:"Nothing transcribed yet.",askNothing:"Add context or transcribe something first.",
+    askTitle:"Ask the transcript",askSub:"Ask anything about what was said. Answers use the transcript and your context — you can also ask questions about the attached documents even before transcribing.",
+    askThinking:"Thinking…",askNoLLM:"Connect an AI provider (key 🔑) to ask questions.",askEmptyTr:"Nothing transcribed yet.",askNothing:"Add context or transcribe something first.",
   },
 
   it:{tag:"Intelligenza per conversazioni dal vivo",empty:"Trascrivi dal vivo, dividi in capitoli, riepiloga<br>e proponi domande intelligenti mentre parli!",
@@ -953,20 +1143,17 @@ const I18N={
     keyTitle:"Connetti un provider AI",
     keySubAnthropic:"Incolla la tua chiave API Anthropic per generare riepiloghi e domande intelligenti con Claude. È salvata solo in questo browser e inviata solo ad Anthropic.",
     keySubGlm:"Incolla la tua chiave API GLM (Zhipu AI) per generare riepiloghi e domande intelligenti con GLM. È salvata solo in questo browser e inviata solo a Zhipu AI.",
+    keySubOllama:"Ollama gira in locale sul tuo computer — niente chiave API. Avvia il server (vedi istruzioni sotto), imposta endpoint e nome modello, poi prova la connessione.",
     keyNoteAnthropic:"<b>Tienila privata:</b> una chiave salvata nel browser può essere letta da chi usa questo dispositivo. Usa una chiave limitata a questo scopo e rimuovila al termine. Ottieni una chiave su <a class='mlink' href='{link}' target='_blank' rel='noopener'>{linkLabel}</a>.",
     keyNoteGlm:"<b>Tienila privata:</b> una chiave salvata nel browser può essere letta da chi usa questo dispositivo. Usa una chiave limitata a questo scopo e rimuovila al termine. Ottieni una chiave su <a class='mlink' href='{link}' target='_blank' rel='noopener'>{linkLabel}</a>.",
     save:"Salva",clear:"Rimuovi",close:"Chiudi",connected:"● Connesso",artifactOn:"● Connesso tramite l'app Claude",notConnected:"○ Non connesso — uso il motore locale",
+    ollamaConnected:"● Ollama raggiungibile",ollamaNotConnected:"○ Ollama non raggiungibile — avvia prima il server",
     keyMiniOn:"● Connesso",keyMiniOff:"○ Non connesso",
     keySaved:"Chiave salvata",keyRemoved:"Chiave rimossa",keyBad:"Non sembra una chiave valida per questo provider",
     setTitle:"Impostazioni",setProvider:"Provider",setModel:"Livello modello",setModelHint:"(usato quando la chiave API è attiva)",setKeyLbl:"Gestisci chiave API",
     mFast:"Veloce",mFastS:"Haiku · economico",mBal:"Bilanciato",mBalS:"Sonnet",mAdv:"Avanzato",mAdvS:"Opus · costoso",
     mFastSGlm:"GLM-4.5-Air · economico",mBalSGlm:"GLM-4.6",mAdvSGlm:"GLM-5.1 · costoso",
-    oFast:"Veloce",oFastS:"gemma3:4b",oBal:"Bilanciato",oBalS:"gemma3:12b",oAdv:"Avanzato",oAdvS:"gemma3:27b",ollamaLocal:"Locale",
-    setOllamaSize:"Dimensione modello",setOllamaSizeHint:"(deve essere già scaricato in Ollama)",
-    setOllamaModel:"Nome del modello",setOllamaUrl:"Indirizzo del server",ollamaTestLbl:"Verifica connessione",
-    ollamaNote:"Funziona interamente sul tuo computer — nessuna chiave API, nulla lascia il tuo dispositivo. Richiede Ollama avviato localmente con <code>OLLAMA_ORIGINS</code> che consente questa pagina. Vedi la nota di configurazione qui sotto.",
-    ollamaTesting:"Verifica…",ollamaOk:"● Connesso",ollamaOkEmpty:"● Connesso — nessun modello scaricato",ollamaFail:"○ Impossibile raggiungere il server",
-    ollamaUnreachableMsg:"Impossibile raggiungere Ollama. Verifica che sia avviato localmente e che OLLAMA_ORIGINS consenta questa pagina, poi riprova.",
+    mFastSOllama:"Gemma3 1B · più piccolo",mBalSOllama:"Gemma3 (configurato)",mAdvSOllama:"Gemma3 12B · più grande",
     setVerb:"Dettaglio riepilogo e domande",vShort:"Breve",vMed:"Medio",vLong:"Lungo",
     setChap:"Lunghezza tipica capitolo",setChapHint:"(parole)",saved:"Impostazioni salvate",
     setSpeech:"Lingua parlata",setSpeechHint:"(trascrizione)",setOut:"Lingua di riepilogo e domande",
@@ -979,13 +1166,33 @@ const I18N={
     actCopy:"Copia",actShare:"Inoltra",actTxt:".txt",recapCopied:"Riepilogo copiato",recapShared:"Condiviso",recapSaved:"Riepilogo salvato (.txt)",
     setVerbLbl:"Dettaglio riepilogo",setNq:"Domande intelligenti",setNqHint:"(per riepilogo/capitolo)",
     ctxTitle:"Contesto della conversazione",ctxSub:"Descrivi l'obiettivo della conversazione e allega documenti da discutere. Viene aggiunto all'inizio del prompt per guidare riepiloghi e domande.",
-    ctxNote:"Il testo dei file .txt/.md/.csv/.json/.html viene letto direttamente. I file PDF, Word (.docx) e PowerPoint (.pptx) vengono analizzati nel browser, quindi il loro contenuto viene usato anch'esso. Altri formati sono allegati solo come nome.",
+    ctxNote:"I file PDF, Word (.docx) e PowerPoint (.pptx) vengono analizzati nel browser e il loro testo è aggiunto al prompt — insieme a .txt/.md/.csv/.json/.html. Il contenuto è disponibile per riepiloghi e domande appena salvi, anche prima di trascrivere.",
     attach:"Allega file",ctxSaved:"Contesto salvato",ctxOn:"● Contesto impostato",
-    ctxParsing:"Lettura…",ctxParseErr:"Impossibile leggere il file",ctxNameOnly:"solo nome",
+    ctxAttached:"{n} file allegati",ctxParseFailed:"Impossibile analizzare {n} file — allegati solo come nome",
+    ollamaSetupTitle:"Avvia Ollama in locale",
+    ollamaSetupSub:"Ollama è un server di modelli gratuito e open-source che gira sul tuo computer. Avvialo una volta prima di usare questo provider. Modello consigliato: gemma3 (Google Gemma 3).",
+    ollamaStep1:"1) Installa Ollama da ollama.com (macOS / Windows / Linux). Su Linux puoi anche eseguire:",
+    ollamaStep2:"2) Scarica il modello Gemma (solo la prima volta — scarica qualche GB):",
+    ollamaStep3:"3) Avvia il server Ollama (resta in esecuzione in background):",
+    ollamaStep4:"4) Torna qui, imposta l'endpoint (predefinito http://localhost:11434) e il nome modello, poi tocca Prova connessione.",
+    ollamaStopTitle:"Per fermarlo in seguito:",
+    ollamaStopHint:"Su Windows / macOS: clicca l'icona Ollama nella barra → Esci da Ollama.",
+    ollamaEndpoint:"Endpoint",ollamaModel:"Modello",
+    ollamaProbe:"Prova connessione",ollamaProbeOk:"Ollama raggiungibile ✓",ollamaProbeErr:"Ollama non raggiungibile — il server è in esecuzione?",
+    ollamaProbeChecking:"Verifica…",
+    ollamaProbeModelMissing:"○ Modello non installato — esegui: ollama pull gemma3",
+    ollamaErrServer:"Ollama non raggiungibile. Avvialo (\"ollama serve\") e riprova.",
+    ollamaErrModel:"Modello \"{m}\" non installato. Esegui: ollama pull {m}",
+    ollamaRetrying:"Ollama in avvio, riprovo…",
+    autoScrollPaused:"Scorrimento automatico in pausa",autoScrollResume:"Tocca per riprendere",autoScrollMissed:"{n} nuovi",
+    paneRecaps:"Riepiloghi",paneRecapsHint:"capitoli e riepilogo",
+    paneRecapped:"Trascrizione riepilogata",paneRecappedHint:"sezioni concluse",
+    paneLive:"Trascrizione dal vivo",paneLiveHint:"in corso",
+    topEmptyHint:"Nessuna sezione riepilogata ancora — continua a parlare e i capitoli appariranno qui automaticamente.",
     histTitle:"Sessioni salvate",noSessions:"Nessuna sessione salvata.",sessionSaved:"Sessione salvata",sessionDeleted:"Sessione eliminata",sessionLoaded:"Sessione caricata",confirmDelete:"Eliminare questa sessione?",
     open:"Apri",del:"Elimina",untitled:"Sessione senza titolo",
-    askTitle:"Chiedi alla trascrizione",askSub:"Chiedi qualsiasi cosa su ciò che è stato detto. Le risposte usano la trascrizione e il tuo contesto tramite Claude.",
-    askThinking:"Sto pensando…",askNoLLM:"Connetti Claude (chiave 🔑) per fare domande.",askEmptyTr:"Niente trascritto ancora.",askNothing:"Aggiungi un contesto o trascrivi qualcosa prima.",
+    askTitle:"Chiedi alla trascrizione",askSub:"Chiedi qualsiasi cosa su ciò che è stato detto. Le risposte usano la trascrizione e il tuo contesto — puoi anche fare domande sui documenti allegati prima di iniziare a trascrivere.",
+    askThinking:"Sto pensando…",askNoLLM:"Connetti un provider AI (chiave 🔑) per fare domande.",askEmptyTr:"Niente trascritto ancora.",askNothing:"Aggiungi un contesto o trascrivi qualcosa prima.",
   }
 };
 let uiLang="en";
@@ -1009,11 +1216,6 @@ function applyUI(){
   set("t-setSplit",d.setSplit);set("t-spOn",d.spOn);set("t-spOnS",d.spOnS);set("t-spOff",d.spOff);set("t-spOffS",d.spOffS);
   set("t-secLang",d.secLang);set("t-secChap",d.secChap);set("t-secAI",d.secAI);
   set("t-setProvider",d.setProvider);set("t-setKeyLbl",d.setKeyLbl);
-  set("t-pOllamaS",d.ollamaLocal);
-  set("t-oFast",d.oFast);set("t-oFastS",d.oFastS);set("t-oBal",d.oBal);set("t-oBalS",d.oBalS);set("t-oAdv",d.oAdv);set("t-oAdvS",d.oAdvS);
-  document.getElementById("t-setOllamaSize").innerHTML=d.setOllamaSize+` <span class="set-hint" id="t-setOllamaSizeHint">${d.setOllamaSizeHint}</span>`;
-  set("t-setOllamaModel",d.setOllamaModel);set("t-setOllamaUrl",d.setOllamaUrl);set("t-ollamaTestLbl",d.ollamaTestLbl);
-  document.getElementById("t-ollamaNote").innerHTML=d.ollamaNote;
   applyModelTierLabels();
   set("t-setVerb",d.setVerbLbl);
   document.getElementById("t-setNq").innerHTML=d.setNq+` <span class="set-hint">${d.setNqHint}</span>`;
@@ -1021,6 +1223,11 @@ function applyUI(){
   // context / history / ask panels
   set("t-ctxTitle",d.ctxTitle);set("t-ctxSub",d.ctxSub);set("t-ctxNote",d.ctxNote);
   set("t-histTitle",d.histTitle);set("t-askTitle",d.askTitle);set("t-askSub",d.askSub);
+  // workspace pane labels
+  set("t-paneRecaps",d.paneRecaps);set("t-paneRecapsHint",d.paneRecapsHint);
+  set("t-paneRecapped",d.paneRecapped);set("t-paneRecappedHint",d.paneRecappedHint);
+  set("t-paneLive",d.paneLive);set("t-paneLiveHint",d.paneLiveHint);
+  set("topEmptyHint",d.topEmptyHint);
   document.querySelectorAll("[data-t]").forEach(b=>{b.textContent=d[b.dataset.t]||b.textContent;});
   updateKeyUI();
 }
@@ -1192,13 +1399,29 @@ function makeSections(lang){
     const t=allText();
     if(t)secs.push({title:makeTitle(t,lang),summary:makeRecap(t,lang,verb().secLen),points:makeBullets(t,lang).slice(0,pts)});
   }
+  // Context-only fallback: no transcript at all but the user attached docs.
+  // Build a section per attached document so the recap stays useful.
+  if(!secs.length && hasContext()){
+    (context.files||[]).forEach(f=>{
+      if(f.text && f.text.trim()){
+        secs.push({
+          title:f.name.replace(/\.[^.]+$/,"").slice(0,40)||"Document",
+          summary:makeRecap(f.text,lang,verb().secLen),
+          points:makeBullets(f.text,lang).slice(0,pts)
+        });
+      }
+    });
+    if(!secs.length && context.objective && context.objective.trim()){
+      secs.push({title:makeTitle(context.objective,lang),summary:makeRecap(context.objective,lang,verb().secLen),points:[]});
+    }
+  }
   return secs;
 }
 async function analyzeOverview(text){
   const out=settings.out, src=settings.speech;
   if(LLM.enabled){try{const r=await LLM.call(text,out,"overview");
     if(r&&r.recap)return{...r,questions:(Array.isArray(r.questions)?r.questions:[]).slice(0,settings.nq),lang:src,_src:"llm"};}catch(e){}}
-  return{recap:makeRecap(text,src,verb().ovLen),sections:makeSections(src),questions:makeQuestions(text,src,out,settings.nq),lang:src};
+  return{recap:makeRecap(text||contextBlock(),src,verb().ovLen),sections:makeSections(src),questions:makeQuestions(text||contextBlock(),src,out,settings.nq),lang:src};
 }
 
 /* ---------- Concept-based chapter splitting ----------
@@ -1284,9 +1507,61 @@ function renderChapter(ch,i){
   el.querySelectorAll(".q").forEach(q=>q.addEventListener("click",()=>{navigator.clipboard?.writeText(q.textContent.trim());tt(I18N[uiLang].qCopied);}));
   return el;
 }
+/* Live-transcript auto-scroll management.
+   The transcript window (liveTxt) normally snaps to the bottom on every new
+   phrase so the user sees the latest text. But when the user clicks "Jump to
+   transcript" from a recap card (or scrolls up manually to read an earlier
+   section), that snap would yank them back to the bottom within a few hundred
+   milliseconds — making the jump useless while recording is active.
+   Solution: pause auto-scroll for ~6s after a jump (and indefinitely after a
+   manual scroll-up). Show a small floating pill so the user knows live updates
+   are paused and can resume with a tap. New-arrivals counter on the pill tells
+   them how many updates they've missed. */
+let transcriptAutoScroll=true;   // when false, renderLive() skips the scroll-snap
+let autoScrollPauseUntil=0;      // 0 = no auto-resume scheduled; >0 = resume timestamp
+let autoScrollMissed=0;          // # of renderLive updates that arrived while paused
+let _asResumeTimer=null;
+function updatePausePill(){
+  const pill=document.getElementById("asPause");
+  if(!pill)return;
+  if(transcriptAutoScroll){ pill.classList.remove("show"); return; }
+  const d=I18N[uiLang];
+  const missedLabel = autoScrollMissed>0 ? ` <span class="pnew">${d.autoScrollMissed.replace("{n}",autoScrollMissed)}</span>` : "";
+  pill.innerHTML = `<span class="pdot"></span><span>${d.autoScrollPaused}${missedLabel} · ${d.autoScrollResume}</span>`;
+  pill.classList.add("show");
+}
+function pauseAutoScroll(durationMs){
+  transcriptAutoScroll=false;
+  autoScrollPauseUntil = durationMs ? Date.now()+durationMs : 0;
+  if(_asResumeTimer){ clearTimeout(_asResumeTimer); _asResumeTimer=null; }
+  if(durationMs){
+    _asResumeTimer=setTimeout(()=>{
+      // Only auto-resume if the pause hasn't been extended (e.g. by another jump
+      // or by the user scrolling further). Manual scroll-up pauses with
+      // durationMs=0 and won't auto-resume.
+      if(autoScrollPauseUntil && Date.now()>=autoScrollPauseUntil){
+        resumeAutoScroll();
+      }
+    }, durationMs);
+  }
+  updatePausePill();
+}
+function resumeAutoScroll(){
+  transcriptAutoScroll=true;
+  autoScrollPauseUntil=0;
+  autoScrollMissed=0;
+  if(_asResumeTimer){ clearTimeout(_asResumeTimer); _asResumeTimer=null; }
+  updatePausePill();
+  // Snap to bottom immediately so the user sees the latest text.
+  try{ liveTxt.scrollTop=liveTxt.scrollHeight; }catch(_){}
+}
 /* Smooth-scroll to a chapter card or transcript block by id, opening the
    chapter if it's collapsed, and giving it a brief highlight so the jump
-   is obvious even on a long page. */
+   is obvious even on a long page.
+   In the 3-pane layout, the target may live in a DIFFERENT pane from the
+   one the user is currently reading — scrollIntoView automatically scrolls
+   the nearest scrollable ancestor (the pane's own scroll container), so
+   each pane moves independently without affecting the others. */
 function jumpTo(id){
   const el=document.getElementById(id);
   if(!el)return;
@@ -1309,23 +1584,38 @@ function allText(){return (chapters.map(c=>c.text).join(" ")+" "+curBuf).trim();
 function totalWords(){return allText().split(/\s+/).filter(Boolean).length;}
 
 function updateRecapBtn(){
-  recapBtn.classList.toggle("show", totalWords()>=20);
+  // Show the Recap button whenever there's enough transcript OR the user has
+  // supplied context (objective / attached docs). With context alone, the
+  // recap is grounded in the documents — useful before transcription starts.
   const t=totalWords();
+  recapBtn.classList.toggle("show", t>=20 || hasContext());
   wc.textContent = t? (t+" "+I18N[uiLang].words):"";
 }
 
-/* Build the "by section" HTML for the overview. When the sections line up
-   1:1 with committed chapters (the normal case while chaptering is on),
-   each section gets a jump link to its matching transcript block so the
-   recap and the live transcript stay cross-navigable. */
+/* Build the "by section" HTML for the overview. Each section gets a jump link:
+   - If the sections line up 1:1 with committed chapters, jump straight to the
+     matching transcript block (seg-${id}).
+   - If the section index falls within the chapter range (but counts differ),
+     still link to the closest chapter's transcript block — partial linking is
+     better than none.
+   - If there are no chapters at all (chaptering off, or context-only recap),
+     fall back to jumping to the live transcript area so the user still lands
+     somewhere useful.
+   This makes the recap ↔ transcript link work "when applicable" — i.e.
+   whenever there is a corresponding transcript block to jump to. */
 function ovSectionsHtml(a,d){
   const sections=Array.isArray(a.sections)?a.sections:[];
   if(!sections.length)
     return (a.bullets&&a.bullets.length?`<div class="qh" style="margin:4px 0 9px">▸ ${d.keypoints}</div><ul class="ov-bul">${a.bullets.map(b=>`<li>${esc(b)}</li>`).join("")}</ul>`:"");
-  const linkable=sections.length===chapters.length;
+  const linkable=sections.length===chapters.length && chapters.length>0;
+  const liveTarget = chapters.length ? null : "liveCard";
   return `<div class="qh" style="margin:4px 0 9px">▸ ${d.bysection}</div><div class="ov-sections">`+
     sections.map((s,i)=>{
-      const jump=linkable?`<button class="jumpBtn sm" data-jump="seg-${chapters[i].id}" title="${esc(d.jumpToTranscript)}" aria-label="${esc(d.jumpToTranscript)}">
+      let jumpTarget=null, jumpTitle=d.jumpToTranscript;
+      if(linkable){ jumpTarget="seg-"+chapters[i].id; }
+      else if(chapters.length && i<chapters.length){ jumpTarget="seg-"+chapters[i].id; }
+      else if(liveTarget){ jumpTarget=liveTarget; }
+      const jump=jumpTarget?`<button class="jumpBtn sm" data-jump="${jumpTarget}" title="${esc(jumpTitle)}" aria-label="${esc(jumpTitle)}">
           <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>
         </button>`:"";
       return `<div class="ov-sec">
@@ -1341,7 +1631,11 @@ function bindOvSectionJumps(root){
 
 async function buildOverview(){
   const text=allText();
-  if(text.split(/\s+/).filter(Boolean).length<20){tt(I18N[uiLang].noContent);return;}
+  const wordCount=text.split(/\s+/).filter(Boolean).length;
+  // Need either enough transcript OR an active context (objective / docs).
+  // With context alone the recap is grounded in the documents — useful when
+  // the user wants to query the material before transcribing anything.
+  if(wordCount<20 && !hasContext()){tt(I18N[uiLang].noContent);return;}
   const d=I18N[uiLang];
   recapBtn.style.opacity=".6";recapBtn.style.pointerEvents="none";
   // show thinking state if the LLM is in play
@@ -1350,7 +1644,8 @@ async function buildOverview(){
     overview.innerHTML=`<div class="ov-hd"><div class="ic">✨</div><div class="ti">${d.ovTitle}</div></div>
       <div class="ov-think"><span class="sp"></span>${d.thinking}</div>`;
     overview.style.animation="none";void overview.offsetWidth;overview.style.animation="rise .5s cubic-bezier(.2,.8,.2,1) both";
-    scroll.scrollTo({top:0,behavior:"smooth"});
+    const leftScroll=document.getElementById("leftScroll");
+    if(leftScroll) leftScroll.scrollTo({top:0,behavior:"smooth"});
   }
   const a=await analyzeOverview(text);
   lastOverview=a;
@@ -1377,7 +1672,8 @@ async function buildOverview(){
   overview.querySelectorAll(".ov-act").forEach(b=>b.addEventListener("click",()=>recapAction(b.dataset.act)));
   bindOvSectionJumps(overview);
   overview.style.animation="none";void overview.offsetWidth;overview.style.animation="rise .5s cubic-bezier(.2,.8,.2,1) both";
-  scroll.scrollTo({top:0,behavior:"smooth"});
+  const leftScroll2=document.getElementById("leftScroll");
+  if(leftScroll2) leftScroll2.scrollTo({top:0,behavior:"smooth"});
   tt(d.updated);
 }
 recapBtn.addEventListener("click",buildOverview);
@@ -1538,16 +1834,32 @@ function startRecog(){
 function segHtml(segs){
   return (segs||[]).map(s=>`<span class="${pc(s.speaker).css}">${esc(s.text)}</span>`).join(" ");
 }
-/* The transcript window holds the WHOLE conversation and never empties:
-   committed (recapped) sections as tinted blocks, then the in-progress tail. */
+/* The transcript is split across two panes:
+   - TOP pane (#topScroll → #segSecWrap): committed/recapped chapter sections
+   - LIVE pane (#liveTxt → #segLive): the in-progress tail (current speaker)
+   Splitting them gives each pane its own independent scroll, so the user can
+   browse recapped sections while new live text keeps flowing below. */
 function ensureLiveStructure(){
-  if(!document.getElementById("segSecWrap"))
-    liveTxt.innerHTML='<div id="segSecWrap"></div><div id="segLive"></div>';
+  // segSecWrap lives in the top pane (recapped sections)
+  const topScroll=document.getElementById("topScroll");
+  if(topScroll && !topScroll.querySelector("#segSecWrap")){
+    // Preserve the empty hint if present; segSecWrap goes alongside it.
+    const hint=topScroll.querySelector("#topEmptyHint");
+    const wrap=document.createElement("div");
+    wrap.id="segSecWrap";
+    topScroll.appendChild(wrap);
+  }
+  // segLive lives in the live pane
+  if(!document.getElementById("segLive")){
+    liveTxt.innerHTML='<div id="segLive"></div>';
+  }
 }
 function renderSections(){
   const d=I18N[uiLang];
   ensureLiveStructure();
-  document.getElementById("segSecWrap").innerHTML=chapters.map((c,i)=>{
+  const wrap=document.getElementById("segSecWrap");
+  if(!wrap)return;
+  wrap.innerHTML=chapters.map((c,i)=>{
     const t=sectionTint(i),flash=(c.isNew&&!c.pending)?" flash":"";
     const tag=esc(I18N[uiLang].chapter)+" "+(i+1)+(c.pending?" · …":" · "+esc(c.title));
     const segs=c.segments&&c.segments.length?c.segments:[{speaker:0,text:c.text}];
@@ -1559,17 +1871,26 @@ function renderSections(){
         <div class="seg-sec-tx">${segHtml(segs)}</div>
       </div>`;
   }).join("");
+  // Toggle the "no recapped sections" hint in the top pane.
+  const hint=document.getElementById("topEmptyHint");
+  if(hint) hint.style.display = chapters.length ? "none" : "";
   document.querySelectorAll('#segSecWrap .jumpBtn[data-jump]').forEach(b=>b.addEventListener("click",e=>{e.stopPropagation();jumpTo(b.dataset.jump);}));
 }
 function renderLive(){
-  liveCard.style.display="block";
   ensureLiveStructure();
   const tail=segHtml(segments);
   // interim shown in the current speaker's color (stable; no per-tone flicker)
   const interimHtml=interim?`<span class="${pc(currentSpeaker).css}" style="opacity:.78">${esc(interim)}</span>`:"";
   const inner=(tail||interimHtml)?`${tail}${tail&&interimHtml?" ":""}${interimHtml}`:"";
   document.getElementById("segLive").innerHTML=`<div class="seg-live">${inner}<span class="cursor"></span></div>`;
-  liveTxt.scrollTop=liveTxt.scrollHeight;   // keep the latest text in view
+  if(transcriptAutoScroll){
+    liveTxt.scrollTop=liveTxt.scrollHeight;   // keep the latest text in view
+  } else {
+    // User is reading an earlier part of the live pane — don't yank the scroll.
+    // Just count the missed updates so the pause pill can tell them what's new.
+    autoScrollMissed++;
+    updatePausePill();
+  }
 }
 
 /* pause detection */
@@ -1637,6 +1958,7 @@ async function start(){
   if(audioCtx&&audioCtx.state==="suspended"){try{await audioCtx.resume();}catch(_){}}
   if(!startRecog())return;
   recording=true;
+  resumeAutoScroll();   // starting fresh — user clearly wants to see the new text
   // start a fresh pitch window so stale samples don't bias the first utterance
   pitchSamples=[];lastUtteranceEnd=Date.now();lastActivityTs=Date.now();
   recBtn.classList.add("live");
@@ -1659,8 +1981,9 @@ function stop(){
   // NOTE: we intentionally do NOT stop micStream tracks, so iOS keeps
   // the permission warm and won't re-prompt on the next recording.
   if(audioCtx&&audioCtx.state==="running"){/* keep ctx alive */}
-  // keep the transcript window visible if anything was captured (sections or tail)
-  setTimeout(()=>{renderLive();if(!curBuf.trim()&&!chapters.length)liveCard.style.display="none";updateRecapBtn();},300);
+  // keep the transcript pane content rendered after stopping so the user can
+  // still read what was captured (panes are always visible in the new layout)
+  setTimeout(()=>{renderLive();updateRecapBtn();},300);
 }
 recBtn.addEventListener("click",()=>{recording?stop():start();});
 
@@ -1693,10 +2016,17 @@ $("#copy").addEventListener("click",async()=>{
 
 function doReset(){
   if(recording)stop();
+  resumeAutoScroll();   // clear any paused state from a previous session
   chapters=[];curBuf="";interim="";isFirstChapter=true;lastOverview=null;
   segments=[];speakers=[];pitchSamples=[];
   currentSpeaker=0;lastUtteranceEnd=0;lastActivityTs=0;
-  liveTxt.innerHTML='<span class="cursor"></span>';liveCard.style.display="none";
+  // Clear the live pane (tail) and the top pane (recapped sections).
+  liveTxt.innerHTML='<span class="cursor"></span>';
+  const topScroll=document.getElementById("topScroll");
+  if(topScroll){
+    // Restore the empty hint and remove any committed-section blocks.
+    topScroll.innerHTML='<div class="pane-empty-hint" id="topEmptyHint">'+I18N[uiLang].topEmptyHint+'</div>';
+  }
   overview.style.display="none";refreshChapters();updateRecapBtn();
   tt(I18N[uiLang].cleared);stat.textContent=I18N[uiLang].ready;
 }
@@ -1784,30 +2114,139 @@ $("#export").addEventListener("click",()=>{
 /* ---------- API key modal ----------
    The modal has its own provider tab (keyModalProvider) so the person can
    manage either key regardless of which provider is currently active in
-   Settings — switching tabs here does NOT change settings.provider. */
+   Settings — switching tabs here does NOT change settings.provider.
+   Ollama is a third tab that shows endpoint + model + run instructions
+   instead of an API key (it needs none). */
 let keyModalProvider="anthropic";
 const KEY_PROVIDER_INFO={
   anthropic:{placeholder:"sk-ant-...", link:"https://console.anthropic.com/settings/keys", linkLabel:"console.anthropic.com"},
   glm:      {placeholder:"your GLM API key...", link:"https://open.bigmodel.cn/usercenter/apikeys", linkLabel:"open.bigmodel.cn"}
 };
+/* Ollama reachability + model-availability probe.
+   - ollamaReachable: null = unknown, true/false = server is up/down
+   - ollamaModelReady: null = unknown, true/false = configured model is installed
+   - ollamaProbeAt: timestamp of the last successful probe (cached for OLLAMA_PROBE_TTL ms)
+   The probe is retried up to 3 times with a short gap so we don't false-negative
+   when the server is just coming up (e.g. user ran `ollama serve` a moment ago
+   and the daemon hasn't bound to the port yet). */
+let ollamaReachable=null;
+let ollamaModelReady=null;
+let ollamaProbeAt=0;
+const OLLAMA_PROBE_TTL=5000;   // cache the probe result for 5s between calls
+async function probeOllama(opts){
+  opts=opts||{};
+  const ep=getOllamaEndpoint().replace(/\/+$/,"");
+  const model=getOllamaModel();
+  // Serve cached result unless the caller forces a fresh probe.
+  if(!opts.force && ollamaProbeAt && Date.now()-ollamaProbeAt<OLLAMA_PROBE_TTL){
+    return ollamaReachable;
+  }
+  for(let attempt=0; attempt<3; attempt++){
+    try{
+      const ctrl=new AbortController();
+      const t=setTimeout(()=>ctrl.abort(),3500);
+      const r=await fetch(ep+"/api/tags",{signal:ctrl.signal});
+      clearTimeout(t);
+      ollamaReachable=r.ok;
+      ollamaProbeAt=Date.now();
+      if(!r.ok){ ollamaModelReady=false; return false; }
+      // Server is up — confirm the configured model is actually installed so
+      // we can guide the user to `ollama pull` instead of letting the chat
+      // call fail with a cryptic "model not found" error.
+      try{
+        const data=await r.json();
+        const models=Array.isArray(data&&data.models)?data.models.map(m=>m.name||m.model||""):[];
+        const want=model.split(":")[0];
+        ollamaModelReady = models.some(n=>n===model || (n&&n.split(":")[0]===want));
+      }catch(_){ ollamaModelReady=null; }
+      return ollamaReachable;
+    }catch(e){
+      if(attempt<2) await new Promise(r=>setTimeout(r,800));   // brief pause, then retry
+    }
+  }
+  ollamaReachable=false;
+  ollamaModelReady=false;
+  ollamaProbeAt=Date.now();
+  return false;
+}
+/* Pre-flight check before every Ollama LLM call. Throws a tagged error
+   ("OLLAMA_DOWN" / "OLLAMA_MODEL_MISSING") so callers can distinguish a
+   provider-outage from a normal transient failure, and shows an actionable,
+   rate-limited toast so the user knows exactly what to fix. Without this,
+   the fetch would hang for 30+ seconds before failing — and the chapter
+   recap would silently fall back to the on-device version with no signal
+   that Ollama was the problem. */
+let _lastOllamaErrType=null, _lastOllamaErrAt=0;
+function ollamaErrToast(type,msg){
+  const now=Date.now();
+  if(type===_lastOllamaErrType && now-_lastOllamaErrAt<8000) return;   // rate-limit: max one toast per 8s per error type
+  _lastOllamaErrType=type; _lastOllamaErrAt=now;
+  tt(msg);
+}
+async function ensureOllamaReady(){
+  await probeOllama({force:true});
+  const d=I18N[uiLang];
+  if(!ollamaReachable){
+    ollamaErrToast("down", d.ollamaErrServer);
+    throw new Error("OLLAMA_DOWN");
+  }
+  if(ollamaModelReady===false){
+    const m=getOllamaModel();
+    ollamaErrToast("model", d.ollamaErrModel.split("{m}").join(m));
+    throw new Error("OLLAMA_MODEL_MISSING");
+  }
+}
 function updateKeyUI(){
   const d=I18N[uiLang],st=document.getElementById("keyStatus"),btn=document.getElementById("keyBtn");
   const onAnthropic=keyLooksValid(getApiKey("anthropic"),"anthropic"), onGlm=keyLooksValid(getApiKey("glm"),"glm");
-  const onActive=keyModalProvider==="anthropic"?onAnthropic:onGlm;
+  const onOllama=settings.provider==="ollama";   // local provider is always "ready" if selected
+  const onActive=keyModalProvider==="anthropic"?onAnthropic:(keyModalProvider==="glm"?onGlm:onOllama);
   const art=!onActive&&keyModalProvider==="anthropic"&&LLM.hasArtifact;
-  if(st){st.textContent=onActive?d.connected:(art?d.artifactOn:d.notConnected);st.className="mstatus "+((onActive||art)?"ok":"off");}
-  // the header key icon reflects whichever provider is active in Settings.
-  // Ollama has no key to check — show it as ready since there's always a
-  // (defaulted) server address; actual reachability surfaces via real requests
-  // or the Settings "Test connection" button.
-  const activeOn=settings.provider==="anthropic"?onAnthropic:settings.provider==="glm"?onGlm:true;
+  // The key icon in the header reflects whichever provider is active in Settings.
+  const activeOn=settings.provider==="anthropic"?onAnthropic:(settings.provider==="glm"?onGlm:onOllama);
   if(btn)btn.classList.toggle("on",activeOn);
   syncSeg("keyProviderTabs",keyModalProvider);
-  const info=KEY_PROVIDER_INFO[keyModalProvider];
-  keyInput.placeholder=info.placeholder;
-  set("t-keySub", keyModalProvider==="anthropic"?d.keySubAnthropic:d.keySubGlm);
-  document.getElementById("t-keyNote").innerHTML=(keyModalProvider==="anthropic"?d.keyNoteAnthropic:d.keyNoteGlm)
-    .replace("{link}",info.link).replace("{linkLabel}",info.linkLabel);
+  // Toggle between the API-key panel and the Ollama panel.
+  const isOllama=keyModalProvider==="ollama";
+  document.getElementById("keyApiKeyPanel").style.display=isOllama?"none":"";
+  document.getElementById("keyOllamaPanel").style.display=isOllama?"":"none";
+  if(isOllama){
+    // Populate endpoint + model inputs and the status line.
+    const epInput=document.getElementById("ollamaEndpointInput"), modelInput=document.getElementById("ollamaModelInput");
+    if(epInput && document.activeElement!==epInput)epInput.value=getOllamaEndpoint();
+    if(modelInput && document.activeElement!==modelInput)modelInput.value=getOllamaModel();
+    const ost=document.getElementById("ollamaStatus");
+    if(ost){
+      if(ollamaReachable===true && ollamaModelReady===false){ost.textContent=d.ollamaProbeModelMissing;ost.className="mstatus off";}
+      else if(ollamaReachable===true){ost.textContent=d.ollamaConnected;ost.className="mstatus ok";}
+      else if(ollamaReachable===false){ost.textContent=d.ollamaNotConnected;ost.className="mstatus off";}
+      else {ost.textContent=d.ollamaProbeChecking;ost.className="mstatus off";}
+    }
+    set("t-ollamaSub",d.keySubOllama);
+    set("t-ollamaSetupTitle",d.ollamaSetupTitle);
+    document.getElementById("t-ollamaSetupSub").textContent=d.ollamaSetupSub;
+    set("t-ollamaStep1",d.ollamaStep1);
+    set("t-ollamaStep2",d.ollamaStep2);
+    set("t-ollamaStep3",d.ollamaStep3);
+    set("t-ollamaStep4",d.ollamaStep4);
+    set("t-ollamaStopTitle",d.ollamaStopTitle);
+    document.getElementById("t-ollamaStopHint").textContent=d.ollamaStopHint;
+    set("t-ollamaEndpoint",d.ollamaEndpoint);
+    set("t-ollamaModel",d.ollamaModel);
+    const probe=document.getElementById("ollamaProbe");
+    if(probe){
+      probe.classList.remove("ok","err");
+      if(ollamaReachable===true)probe.classList.add("ok");
+      else if(ollamaReachable===false)probe.classList.add("err");
+    }
+  } else {
+    if(st){st.textContent=onActive?d.connected:(art?d.artifactOn:d.notConnected);st.className="mstatus "+((onActive||art)?"ok":"off");}
+    const info=KEY_PROVIDER_INFO[keyModalProvider];
+    keyInput.placeholder=info.placeholder;
+    set("t-keySub", keyModalProvider==="anthropic"?d.keySubAnthropic:d.keySubGlm);
+    document.getElementById("t-keyNote").innerHTML=(keyModalProvider==="anthropic"?d.keyNoteAnthropic:d.keyNoteGlm)
+      .replace("{link}",info.link).replace("{linkLabel}",info.linkLabel);
+  }
   updateSetKeyStatus();
 }
 function updateSetKeyStatus(){
@@ -1820,22 +2259,29 @@ function updateSetKeyStatus(){
 const keyModal=$("#keyModal"),keyInput=$("#keyInput");
 function openKey(provider){
   keyModalProvider=provider||settings.provider;
-  keyInput.value=getApiKey(keyModalProvider);keyInput.type="password";
+  if(keyModalProvider!=="ollama"){
+    keyInput.value=getApiKey(keyModalProvider);keyInput.type="password";
+  }
+  // Re-probe Ollama every time the modal opens on that tab, so the status is fresh.
+  if(keyModalProvider==="ollama"){ ollamaReachable=null; updateKeyUI(); probeOllama().then(()=>updateKeyUI()); }
   updateKeyUI();keyModal.classList.add("show");
 }
 function closeKey(){keyModal.classList.remove("show");}
-$("#keyBtn").addEventListener("click",()=>{
-  if(settings.provider==="ollama"){openSet();return;}
-  openKey(settings.provider);
-});
+$("#keyBtn").addEventListener("click",()=>openKey(settings.provider));
 $("#keyClose").addEventListener("click",closeKey);
+$("#ollamaClose").addEventListener("click",closeKey);
 keyModal.addEventListener("click",e=>{if(e.target===keyModal)closeKey();});
 $("#keyEye").addEventListener("click",()=>{keyInput.type=keyInput.type==="password"?"text":"password";});
 $("#keyProviderTabs").addEventListener("click",e=>{
   const b=e.target.closest("button");if(!b)return;
   keyModalProvider=b.dataset.v;
-  keyInput.value=getApiKey(keyModalProvider);keyInput.type="password";
-  updateKeyUI();
+  if(keyModalProvider!=="ollama"){
+    keyInput.value=getApiKey(keyModalProvider);keyInput.type="password";
+  }
+  // Switching to the Ollama tab kicks off a fresh reachability probe so the
+  // status badge isn't stale from a previous session.
+  if(keyModalProvider==="ollama"){ ollamaReachable=null; updateKeyUI(); probeOllama().then(()=>updateKeyUI()); }
+  else updateKeyUI();
 });
 $("#keySave").addEventListener("click",()=>{
   const k=keyInput.value.trim();
@@ -1844,6 +2290,22 @@ $("#keySave").addEventListener("click",()=>{
   if(k)closeKey();
 });
 $("#keyClear").addEventListener("click",()=>{setApiKey("",keyModalProvider);keyInput.value="";updateKeyUI();tt(I18N[uiLang].keyRemoved);});
+/* Ollama: persist endpoint + model on Save, run a reachability probe on Test. */
+$("#ollamaSave").addEventListener("click",()=>{
+  setOllamaEndpoint(document.getElementById("ollamaEndpointInput").value);
+  setOllamaModel(document.getElementById("ollamaModelInput").value);
+  updateKeyUI();tt(I18N[uiLang].keySaved);closeKey();
+});
+$("#ollamaProbe").addEventListener("click",async function(){
+  // Persist the inputs first so the probe uses the values the user just typed.
+  setOllamaEndpoint(document.getElementById("ollamaEndpointInput").value);
+  setOllamaModel(document.getElementById("ollamaModelInput").value);
+  const d=I18N[uiLang];
+  ollamaReachable=null;updateKeyUI();
+  const ok=await probeOllama();
+  tt(ok?d.ollamaProbeOk:d.ollamaProbeErr);
+  updateKeyUI();
+});
 
 /* ---------- Settings modal ---------- */
 const setModal=$("#setModal");
@@ -1851,30 +2313,21 @@ function syncSeg(id,val){const el=$("#"+id);if(el)[...el.children].forEach(x=>x.
 function syncSettings(){
   syncSeg("setProvider",settings.provider);syncSeg("setModel",settings.model);syncSeg("setVerb",settings.verb);syncSeg("setNq",settings.nq);
   syncSeg("setChap",settings.chap);syncSeg("setSpeech",settings.speech);syncSeg("setOut",settings.out);syncSeg("setSplit",settings.split?1:0);
-  syncSeg("setOllamaTier",settings.model);
   $("#chapLenGroup").style.display=settings.split?"":"none";
-  $("#ollamaUrlInput").value=settings.ollamaUrl||OLLAMA_DEFAULT_URL;
-  $("#ollamaModelInput").value=settings.ollamaModel||"";
-  applyProviderPanel();
   applyModelTierLabels();
   updateSetKeyStatus();
 }
 /* Tier sublabels depend on which provider is selected, since the real model
    names differ — keep the Fast/Balanced/Advanced concept but swap captions. */
 function applyModelTierLabels(){
-  const d=I18N[uiLang], glm=settings.provider==="glm";
-  set("t-mFastS", glm?d.mFastSGlm:d.mFastS);
-  set("t-mBalS",  glm?d.mBalSGlm:d.mBalS);
-  set("t-mAdvS",  glm?d.mAdvSGlm:d.mAdvS);
-}
-/* Anthropic/GLM share the API-key panel; Ollama gets its own (server address +
-   model name) since there's no key to manage — just a local endpoint. */
-function applyProviderPanel(){
-  const ollama=settings.provider==="ollama";
-  $("#cloudModelGroup").style.display=ollama?"none":"";
-  $("#ollamaGroup").style.display=ollama?"":"none";
-  $("#ollamaTestStatus").textContent="";
-  $("#ollamaTestStatus").className="mstatus-mini";
+  const d=I18N[uiLang], p=settings.provider;
+  if(p==="glm"){
+    set("t-mFastS",d.mFastSGlm); set("t-mBalS",d.mBalSGlm); set("t-mAdvS",d.mAdvSGlm);
+  } else if(p==="ollama"){
+    set("t-mFastS",d.mFastSOllama); set("t-mBalS",d.mBalSOllama); set("t-mAdvS",d.mAdvSOllama);
+  } else {
+    set("t-mFastS",d.mFastS); set("t-mBalS",d.mBalS); set("t-mAdvS",d.mAdvS);
+  }
 }
 function openSet(){syncSettings();setModal.classList.add("show");}
 function closeSet(){setModal.classList.remove("show");}
@@ -1885,41 +2338,12 @@ $("#setProvider").addEventListener("click",e=>{
   const b=e.target.closest("button");if(!b)return;
   saveSetting("provider",b.dataset.v);
   syncSeg("setProvider",settings.provider);
-  applyProviderPanel();
   applyModelTierLabels();
   updateSetKeyStatus();
   updateKeyUI();
   tt(I18N[uiLang].saved);
 });
 $("#setKeyBtn").addEventListener("click",()=>{closeSet();openKey(settings.provider);});
-// Ollama tier presets just fill in a sensible Gemma model name; the person can
-// still type any model name they've actually pulled into the text field below.
-$("#setOllamaTier").addEventListener("click",e=>{
-  const b=e.target.closest("button");if(!b)return;
-  saveSetting("model",b.dataset.v);
-  saveSetting("ollamaModel","");           // clear manual override so the tier preset applies
-  syncSeg("setOllamaTier",settings.model);
-  $("#ollamaModelInput").value="";
-  tt(I18N[uiLang].saved);
-});
-$("#ollamaModelInput").addEventListener("change",()=>{ saveSetting("ollamaModel",$("#ollamaModelInput").value.trim()); tt(I18N[uiLang].saved); });
-$("#ollamaUrlInput").addEventListener("change",()=>{ saveSetting("ollamaUrl",$("#ollamaUrlInput").value.trim()||OLLAMA_DEFAULT_URL); tt(I18N[uiLang].saved); });
-$("#ollamaTestBtn").addEventListener("click",async ()=>{
-  const d=I18N[uiLang], st=$("#ollamaTestStatus");
-  st.textContent=d.ollamaTesting; st.className="mstatus-mini";
-  try{
-    const url=($("#ollamaUrlInput").value.trim()||OLLAMA_DEFAULT_URL).replace(/\/+$/,"");
-    const resp=await fetch(url+"/api/tags");
-    if(!resp.ok)throw new Error(String(resp.status));
-    const data=await resp.json();
-    const names=(data.models||[]).map(m=>m.name);
-    st.textContent=names.length?d.ollamaOk+" ("+names.length+(names.length===1?" model":" models")+")":d.ollamaOkEmpty;
-    st.className="mstatus-mini ok";
-  }catch(e){
-    st.textContent=d.ollamaFail;
-    st.className="mstatus-mini off";
-  }
-});
 function bindSeg(id,key,cast){
   $("#"+id).addEventListener("click",e=>{
     const b=e.target.closest("button");if(!b)return;
@@ -1964,16 +2388,16 @@ $("#setOut").addEventListener("click",e=>{
 const ctxModal=$("#ctxModal");
 function fmtSize(n){ return n<1024?n+" B":n<1048576?(n/1024).toFixed(0)+" KB":(n/1048576).toFixed(1)+" MB"; }
 function fmtChars(n){ return n>=1000?(n/1000).toFixed(1)+"k chars":n+" chars"; }
-function persistCtxNow(){ context.objective=$("#ctxObjective").value; saveContext(); updateCtxBtn(); }
+function persistCtxNow(){ context.objective=$("#ctxObjective").value; saveContext(); updateCtxBtn(); updateRecapBtn(); }
 function renderCtxFiles(){
-  const d=I18N[uiLang],wrap=$("#ctxFiles");
+  const wrap=$("#ctxFiles");
   wrap.innerHTML=(context.files||[]).map((f,i)=>{
-    let sz;
-    if(f.status==="parsing")sz=`<span class="spin"></span> ${esc(d.ctxParsing)}`;
-    else if(f.status==="error")sz=`⚠ ${esc(d.ctxParseErr)}`;
-    else if(f.text)sz=esc(fmtChars(f.chars));
-    else sz=esc(d.ctxNameOnly);
-    return `<div class="ctx-file"><span class="nm">📎 ${esc(f.name)}</span><span class="sz">${sz}</span><button class="rm" data-i="${i}" title="Remove">×</button></div>`;
+    let status;
+    if(f.parsing){ status=`<span class="sz parsing">parsing…</span>`; }
+    else if(f.parseError){ status=`<span class="sz err" title="${esc(f.parseError)}">⚠ name only</span>`; }
+    else if(f.text){ status=`<span class="sz">${esc(fmtChars(f.chars))}</span>`; }
+    else { status=`<span class="sz">name only</span>`; }
+    return `<div class="ctx-file"><span class="nm">📎 ${esc(f.name)}</span>${status}<button class="rm" data-i="${i}" title="Remove">×</button></div>`;
   }).join("");
   wrap.querySelectorAll(".rm").forEach(b=>b.addEventListener("click",()=>{ context.files.splice(+b.dataset.i,1); persistCtxNow(); renderCtxFiles(); }));
 }
@@ -1984,39 +2408,31 @@ $("#ctxBtn").addEventListener("click",openCtx);
 $("#ctxClose").addEventListener("click",closeCtx);
 ctxModal.addEventListener("click",e=>{if(e.target===ctxModal)closeCtx();});
 $("#ctxAttach").addEventListener("click",()=>$("#ctxFileInput").click());
-// Accept any file format. Plain-text-like formats are read directly; PDF/Word/PowerPoint
-// are parsed client-side (PDF.js / JSZip, loaded on demand) so their content becomes real,
-// usable context — available to "Ask" immediately, even before any transcription starts.
-const TEXTY=/\.(txt|md|markdown|mdown|csv|tsv|json|jsonl|log|html?|xml|yaml|yml|rtf|srt|vtt|tex|ini|conf|js|ts|py|css)$/i;
-const OFFICEY=/\.(pdf|docx|pptx)$/i;
+// Accept PDF, Word (.docx), PowerPoint (.pptx) and any text-like file. Each
+// file is parsed in-browser and its text added to the prompt context, so the
+// content is available for recaps and questions even before transcription
+// starts. Unsupported binary formats (e.g. legacy .doc/.ppt) attach by name
+// only — the user can paste their text into the objective box above.
 $("#ctxFileInput").addEventListener("change",async e=>{
-  const d=I18N[uiLang];
   const files=[...e.target.files];
   e.target.value="";
-  // Add every file immediately with a parsing/placeholder state so the modal never looks stuck.
-  const entries=files.map(file=>{
-    const entry={name:file.name, text:"", chars:0, status:OFFICEY.test(file.name)?"parsing":"ready"};
-    context.files.push(entry);
-    return {file,entry};
-  });
+  if(!files.length)return;
+  // Add placeholder entries immediately so the user sees something happening,
+  // then parse each file and fill in the text. This matters for big PDFs that
+  // take a few seconds to extract.
+  const placeholders=files.map(f=>({name:f.name, text:"", chars:0, parsing:true, parseError:null}));
+  placeholders.forEach(p=>context.files.push(p));
   persistCtxNow(); renderCtxFiles();
-  for(const {file,entry} of entries){
-    try{
-      if(OFFICEY.test(file.name)){
-        const text=(await extractFileText(file)).slice(0,20000);
-        entry.text=text; entry.chars=text.length; entry.status=text?"ok":"error";
-      }else if(TEXTY.test(file.name)||/^text\//.test(file.type)||/json|xml|csv/.test(file.type)){
-        const text=(await file.text()).slice(0,20000);
-        entry.text=text; entry.chars=text.length; entry.status="ok";
-      }else{
-        entry.status="nameonly";
-      }
-    }catch(err){
-      entry.status="error";
-    }
+  for(let i=0;i<files.length;i++){
+    const f=files[i], p=placeholders[i];
+    const r=await extractFileText(f);
+    p.text=r.text; p.chars=r.text.length; p.parsing=false; p.parseError=r.parseError;
     persistCtxNow(); renderCtxFiles();
   }
-  if(entries.some(({file})=>OFFICEY.test(file.name)))tt(d.ctxSaved);
+  // Surface any parse failures (non-fatal — the file still attaches by name).
+  const failed=placeholders.filter(p=>p.parseError);
+  if(failed.length)tt(I18N[uiLang].ctxParseFailed.replace("{n}",failed.length));
+  else tt(I18N[uiLang].ctxAttached.replace("{n}",files.length));
 });
 $("#ctxSave").addEventListener("click",()=>{
   persistCtxNow(); tt(I18N[uiLang].ctxSaved); closeCtx();
@@ -2052,7 +2468,8 @@ function openSession(id){
   if(s.speech&&(s.speech==="en"||s.speech==="it"))saveSetting("speech",s.speech);
   if(s.out&&(s.out==="en"||s.out==="it")){saveSetting("out",s.out);uiLang=s.out;}
   applyUI(); refreshChapters();
-  if(chapters.length||curBuf.trim()){liveCard.style.display="block";renderLive();} else liveCard.style.display="none";
+  // Panes are always visible in the new layout — just render the content.
+  if(chapters.length||curBuf.trim()){renderLive();}
   if(lastOverview){ renderOverviewFrom(lastOverview); } else overview.style.display="none";
   updateCtxBtn(); updateRecapBtn(); syncSettings();
   closeHist(); tt(I18N[uiLang].sessionLoaded);
@@ -2115,15 +2532,32 @@ async function sendAsk(){
   $("#askInput").value=""; log.scrollTop=log.scrollHeight;
   const aEl=log.lastElementChild;
   try{ const ans=await LLM.ask(q); aEl.classList.remove("think"); aEl.textContent=ans||"…"; }
-  catch(err){
-    aEl.classList.remove("think");
-    const msg=(err&&err.message)==="OLLAMA_UNREACHABLE" ? d.ollamaUnreachableMsg : (err&&err.message||"error");
-    aEl.textContent="⚠️ "+msg;
-  }
+  catch(err){ aEl.classList.remove("think"); aEl.textContent="⚠️ "+(err&&err.message||"error"); }
   log.scrollTop=log.scrollHeight;
 }
 $("#askSend").addEventListener("click",sendAsk);
 $("#askInput").addEventListener("keydown",e=>{if(e.key==="Enter")sendAsk();});
+
+// Auto-scroll pause/resume wiring for the live transcript window.
+// The handler is DEBOUNCED: it only runs ~250ms after the last scroll event,
+// so the intermediate scroll events fired by smooth-scroll animations (from
+// jumpTo's scrollIntoView or resumeAutoScroll's snap-to-bottom) don't
+// spuriously trigger a pause or resume. Only settled scroll positions —
+// i.e. real user scrolls — actually trigger state changes.
+let _liveScrollSettleTimer=null;
+liveTxt.addEventListener("scroll", ()=>{
+  if(_liveScrollSettleTimer) clearTimeout(_liveScrollSettleTimer);
+  _liveScrollSettleTimer=setTimeout(()=>{
+    const distFromBottom = liveTxt.scrollHeight - liveTxt.scrollTop - liveTxt.clientHeight;
+    if(distFromBottom < 24){
+      if(!transcriptAutoScroll) resumeAutoScroll();   // back at bottom → resume
+    } else if(transcriptAutoScroll && Date.now() > autoScrollPauseUntil){
+      pauseAutoScroll(0);   // user manually scrolled up — pause indefinitely
+    }
+  }, 250);
+});
+$("#asPause").addEventListener("click", resumeAutoScroll);
+$("#asPause").addEventListener("keydown", e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); resumeAutoScroll(); } });
 
 loadSettings();loadContext();
 applyUI();updateRecapBtn();updateKeyUI();syncSettings();updateCtxBtn();
