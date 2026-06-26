@@ -33,9 +33,9 @@ window.addEventListener("load",function setupPdf(){
   body{
     font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
     background:
-      radial-gradient(120% 70% at 80% -10%, rgba(90,170,255,.22) 0%, transparent 55%),
-      radial-gradient(120% 80% at 10% -5%, rgba(0,212,255,.16) 0%, transparent 50%),
-      linear-gradient(180deg, var(--bg) 0%, #0c2b5c 42%, #1a4d8f 72%, var(--bg-b) 100%);
+      radial-gradient(120% 70% at 80% 110%, rgba(4,16,43,.55) 0%, transparent 55%),
+      radial-gradient(120% 80% at 10% 105%, rgba(2,10,28,.50) 0%, transparent 50%),
+      linear-gradient(180deg, var(--bg-b) 0%, #1a4d8f 28%, #0c2b5c 58%, var(--bg) 100%);
     color:var(--txt);overflow:hidden;position:fixed;inset:0;
     padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
@@ -108,13 +108,15 @@ window.addEventListener("load",function setupPdf(){
   .pane-live .txt::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:2px}
   .pane-live .txt::-webkit-scrollbar-track{background:transparent}
 
-  /* Responsive: stack panes vertically on narrow screens */
+  /* Responsive: stack panes vertically on narrow screens.
+     Order on mobile: 1) live transcript (top, largest) 2) recapped sections 3) chapters (collapsed).
+     pane-col uses column-reverse so pane-live (defined last in HTML) renders first visually. */
   @media(max-width:899px){
     .workspace{flex-direction:column;padding:4px 8px 6px}
-    .pane-left{width:100%;max-height:30vh;flex:none}
-    .pane-col{flex:1;min-height:0}
-    .pane-top{flex:none;max-height:28vh}
-    .pane-live{flex:1;min-height:140px}
+    .pane-col{order:1;flex:1;min-height:0;flex-direction:column-reverse}
+    .pane-left{order:2;width:100%;flex:none;max-height:30vh}
+    .pane-top{flex:none;max-height:20vh}
+    .pane-live{flex:1;min-height:160px}
   }
 
   /* Recap (overview) panel — uniform light-blue fill */
@@ -282,7 +284,7 @@ window.addEventListener("load",function setupPdf(){
 
   /* Bottom bar */
   .bar{position:absolute;left:0;right:0;bottom:0;padding:14px 18px calc(28px + env(safe-area-inset-bottom));
-    background:linear-gradient(0deg,var(--bg-b) 38%,rgba(47,116,189,0));display:flex;align-items:center;justify-content:center;gap:14px;z-index:15}
+    background:linear-gradient(0deg,var(--bg) 38%,rgba(4,16,43,0));display:flex;align-items:center;justify-content:center;gap:14px;z-index:15}
   .credits{position:absolute;left:0;right:0;bottom:calc(6px + env(safe-area-inset-bottom));text-align:center;
     font-size:9.5px;letter-spacing:.6px;font-weight:700;color:var(--txt);opacity:.5;pointer-events:none;z-index:16}
 
@@ -734,7 +736,7 @@ window.addEventListener("load",function setupPdf(){
 <div class="modal" id="askModal">
   <div class="sheet">
     <h3>💬 <span id="t-askTitle">Ask the transcript</span></h3>
-    <div class="sub" id="t-askSub">Ask anything about what was said! Answers use the transcript and your context via Claude.</div>
+    <div class="sub" id="t-askSub">Ask anything about what was said. Answers use the transcript and your context via Claude.</div>
     <div class="ask-log" id="askLog"></div>
     <div class="keyrow">
       <input id="askInput" type="text" placeholder="Ask a question…" autocomplete="off">
@@ -1481,7 +1483,8 @@ function evaluateSplit(pause){
 /* ---------- Rendering ---------- */
 function renderChapter(ch,i){
   const d=I18N[uiLang],el=document.createElement("div"),t=sectionTint(i);
-  el.className="chap open";el.id="chap-"+ch.id;el.dataset.id=ch.id;
+  const startOpen=window.innerWidth>899;
+  el.className="chap"+(startOpen?" open":"");el.id="chap-"+ch.id;el.dataset.id=ch.id;
   // match the tint of this section's transcript block so the pairing is obvious
   el.style.background=t.bg;el.style.borderColor=t.bd;el.style.setProperty("--secac",t.ac);
   const body=ch.pending
@@ -2028,6 +2031,7 @@ function doReset(){
     topScroll.innerHTML='<div class="pane-empty-hint" id="topEmptyHint">'+I18N[uiLang].topEmptyHint+'</div>';
   }
   overview.style.display="none";refreshChapters();updateRecapBtn();
+  try{localStorage.removeItem(AUTOSAVE_STORE);}catch(e){}
   tt(I18N[uiLang].cleared);stat.textContent=I18N[uiLang].ready;
 }
 const resetModal=$("#resetModal");
@@ -2559,8 +2563,54 @@ liveTxt.addEventListener("scroll", ()=>{
 $("#asPause").addEventListener("click", resumeAutoScroll);
 $("#asPause").addEventListener("keydown", e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); resumeAutoScroll(); } });
 
+/* ---------- Auto-save (crash / tab-reload protection) ----------
+   Saves the live session state to localStorage every 30 seconds and
+   immediately whenever the tab goes to background (visibilitychange).
+   On page load, if a recent autosave exists it is silently restored so
+   the user never loses their content even if iOS kills the tab. */
+const AUTOSAVE_STORE="cc_autosave";
+const AUTOSAVE_TTL=7200000;   // discard saves older than 2 hours
+function doAutosave(){
+  if(!chapters.length&&!curBuf.trim())return;
+  try{
+    localStorage.setItem(AUTOSAVE_STORE,JSON.stringify({
+      ts:Date.now(),
+      chapters:chapters,
+      curBuf:curBuf,
+      segments:segments,
+      speakers:speakers,
+      lastOverview:lastOverview
+    }));
+  }catch(e){}
+}
+setInterval(()=>{ if(chapters.length||curBuf.trim())doAutosave(); },30000);
+document.addEventListener("visibilitychange",()=>{ if(document.hidden)doAutosave(); });
+
+function tryRestoreAutosave(){
+  try{
+    const d=JSON.parse(localStorage.getItem(AUTOSAVE_STORE));
+    if(!d||!d.ts)return;
+    if(Date.now()-d.ts>AUTOSAVE_TTL){localStorage.removeItem(AUTOSAVE_STORE);return;}
+    if(!d.chapters.length&&!d.curBuf)return;
+    chapters=d.chapters||[];
+    curBuf=d.curBuf||"";
+    segments=d.segments||[];
+    speakers=d.speakers||[];
+    lastOverview=d.lastOverview||null;
+    isFirstChapter=!chapters.length;
+    currentSpeaker=(speakers.length?speakers.length-1:0);
+    refreshChapters();
+    if(chapters.length||curBuf.trim())renderLive();
+    if(lastOverview)renderOverviewFrom(lastOverview);
+    updateRecapBtn();
+    stat.textContent=I18N[uiLang].stopped;
+    tt(uiLang==="it"?"Sessione ripristinata automaticamente":"Session auto-restored");
+  }catch(e){}
+}
+
 loadSettings();loadContext();
 applyUI();updateRecapBtn();updateKeyUI();syncSettings();updateCtxBtn();
+tryRestoreAutosave();
 </script>
 </body>
 </html>
