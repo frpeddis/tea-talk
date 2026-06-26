@@ -10,6 +10,9 @@
      - PDF.js: Mozilla's PDF parser, runs fully client-side.
      - Mammoth.js: extracts plain text from .docx (Word) files.
      - JSZip: opens .pptx (which is a ZIP of XML slides) so we can read slide text. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
 <script>
 // Configure PDF.js worker as soon as the lib is available.
 window.addEventListener("load",function setupPdf(){
@@ -453,6 +456,70 @@ window.addEventListener("load",function setupPdf(){
   .ask-a{align-self:flex-start;max-width:92%;background:rgba(0,0,0,.24);border:1px solid var(--line);color:var(--txt);border-radius:14px 14px 14px 4px;padding:10px 12px;font-size:13px;line-height:1.55;white-space:pre-wrap}
   .ask-a.think{color:var(--mut);font-style:italic}
   .ask-hint{color:var(--mut);font-size:12px;text-align:center;padding:14px 0}
+
+  /* ===== Card Tab System ===== */
+  .tab-bar{display:flex;padding:6px 14px 10px;gap:8px;flex:none}
+  .tab-btn{
+    flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    padding:11px 6px 10px;border:1px solid rgba(255,255,255,.10);border-radius:18px;
+    background:rgba(255,255,255,.055);color:var(--mut);font-family:inherit;font-size:10.5px;
+    font-weight:700;letter-spacing:.2px;cursor:pointer;
+    transition:all .28s cubic-bezier(.25,1,.5,1);position:relative;overflow:hidden;
+    -webkit-tap-highlight-color:transparent;
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  .tab-btn::before{
+    content:'';position:absolute;inset:0;
+    background:linear-gradient(135deg,var(--accent3),var(--accent),var(--accent2));
+    opacity:0;transition:opacity .28s cubic-bezier(.25,1,.5,1)}
+  .tab-btn.active{color:#fff;border-color:transparent;
+    box-shadow:0 6px 22px rgba(79,140,255,.5),0 0 0 1px rgba(79,140,255,.28) inset}
+  .tab-btn.active::before{opacity:1}
+  .tab-btn:active{transform:scale(.94)}
+  .tab-icon{font-size:17px;position:relative;z-index:1;line-height:1}
+  .tab-label{position:relative;z-index:1;line-height:1}
+  /* Live-recording dot on the Live tab */
+  .tab-live-dot{
+    position:absolute;top:8px;right:10px;width:7px;height:7px;border-radius:50%;
+    background:var(--hot);display:none;z-index:3;animation:pl 1.4s infinite;
+    box-shadow:0 0 7px var(--hot)}
+  .tab-live-dot.show{display:block}
+  /* Update badge (new chapter / new summary) */
+  .tab-badge{
+    position:absolute;top:8px;right:10px;width:7px;height:7px;border-radius:50%;
+    background:var(--gold);display:none;z-index:3;box-shadow:0 0 7px var(--gold)}
+  .tab-badge.show{display:block}
+
+  /* Card viewport + deck */
+  .card-viewport{flex:1;overflow:hidden;position:relative;min-height:0;padding:0 10px}
+  .card-deck{display:flex;height:100%;will-change:transform;
+    transition:transform .38s cubic-bezier(.25,1,.5,1)}
+  .card-panel{flex:0 0 100%;height:100%;display:flex;flex-direction:column;min-height:0}
+
+  /* Panel 0 — Live: pane fills panel */
+  .panel-live .pane{flex:1;min-height:0}
+
+  /* Panel 1 — Chapters: single scroll, content stacks */
+  .panel-chapters{overflow-y:auto;-webkit-overflow-scrolling:touch;
+    flex-direction:column;gap:8px;padding-bottom:160px}
+  .panel-chapters::-webkit-scrollbar{display:none}
+
+  /* Panel 2 — Summary: single scroll */
+  .panel-summary{overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:160px}
+  .panel-summary::-webkit-scrollbar{display:none}
+
+  /* Section mini-headers inside chapter panel */
+  .panel-hd{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:1.3px;
+    color:var(--accent2);padding:8px 4px 5px;display:flex;align-items:center;gap:6px}
+  .panel-hd .hint{margin-left:auto;font-size:9px;font-weight:600;color:var(--mut);
+    text-transform:none;letter-spacing:.2px}
+
+  /* Summary empty state */
+  .sum-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:52px 28px;color:var(--mut);font-size:13.5px;line-height:1.65;text-align:center;
+    gap:16px;min-height:220px}
+  .sum-empty .big{font-size:44px;filter:drop-shadow(0 8px 22px rgba(79,140,255,.5))}
+  .sum-empty p{opacity:.65;font-style:italic}
+  .sum-empty b{color:var(--accent2);font-style:normal}
 </style>
 </head>
 <body>
@@ -488,41 +555,71 @@ window.addEventListener("load",function setupPdf(){
     <span class="stat-words" id="wc"></span>
   </div>
 
-  <div class="workspace" id="workspace">
-    <!-- LEFT PANE: chapter recaps + overview (with jump links to transcript) -->
-    <aside class="pane pane-left" id="paneLeft">
-      <div class="pane-hd"><span id="t-paneRecaps">📋 Recaps</span><span class="hint" id="t-paneRecapsHint">chapters &amp; overview</span></div>
-      <div class="pane-scroll" id="leftScroll">
-        <div class="overview" id="overview"></div>
-        <div id="chapters"></div>
-        <div class="empty" id="empty">
-          <div class="big-wrap"><span class="big-ring r1"></span><span class="big-ring r2"></span><div class="big">🎙️</div></div>
-          <div id="t-empty">Transcribe live, split into chapters, recap<br>and suggest smart questions as you go!</div>
-          <div class="feats">
-            <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h6"/></svg><span id="t-featChap">Chapters</span></span>
-            <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg><span id="t-featAI">AI recaps</span></span>
-            <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg><span id="t-featAsk">Ask anything</span></span>
+  <!-- Tab selector -->
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="0">
+      <span class="tab-live-dot" id="tabLiveDot"></span>
+      <span class="tab-icon">◎</span>
+      <span class="tab-label" id="t-tabLive">Live</span>
+    </button>
+    <button class="tab-btn" data-tab="1">
+      <span class="tab-badge" id="tabChapBadge"></span>
+      <span class="tab-icon">📋</span>
+      <span class="tab-label" id="t-tabChap">Chapters</span>
+    </button>
+    <button class="tab-btn" data-tab="2">
+      <span class="tab-badge" id="tabSumBadge"></span>
+      <span class="tab-icon">✨</span>
+      <span class="tab-label" id="t-tabSum">Summary</span>
+    </button>
+  </div>
+
+  <!-- Card deck — slides horizontally, one panel visible at a time -->
+  <div class="card-viewport" id="cardViewport">
+    <div class="card-deck" id="cardDeck">
+
+      <!-- Panel 0: Live transcript -->
+      <div class="card-panel panel-live">
+        <section class="pane pane-live live" id="liveCard">
+          <div class="pane-hd"><span class="bd"></span> <span id="t-paneLive">🔴 Live transcript</span><span class="hint" id="t-paneLiveHint">running</span></div>
+          <div class="txt" id="liveTxt"><span class="cursor"></span></div>
+          <div class="as-pause" id="asPause" role="button" tabindex="0" aria-label="Resume auto-scroll"></div>
+        </section>
+      </div>
+
+      <!-- Panel 1: Chapters — committed transcript sections + chapter recap cards -->
+      <div class="card-panel panel-chapters" id="panelChapters">
+        <div class="panel-hd"><span id="t-paneRecapped">📚 Transcript sections</span><span class="hint" id="t-paneRecappedHint">committed</span></div>
+        <div id="topScroll">
+          <div class="pane-empty-hint" id="topEmptyHint">No recapped sections yet — keep talking and chapters will appear here automatically.</div>
+        </div>
+        <div class="panel-hd" style="margin-top:10px"><span id="t-paneRecaps">📋 Chapter recaps</span><span class="hint" id="t-paneRecapsHint">with questions</span></div>
+        <div id="leftScroll">
+          <div id="chapters"></div>
+          <div class="empty" id="empty">
+            <div class="big-wrap"><span class="big-ring r1"></span><span class="big-ring r2"></span><div class="big">🎙️</div></div>
+            <div id="t-empty">Transcribe live, split into chapters, recap<br>and suggest smart questions as you go!</div>
+            <div class="feats">
+              <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h6"/></svg><span id="t-featChap">Chapters</span></span>
+              <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg><span id="t-featAI">AI recaps</span></span>
+              <span class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z"/></svg><span id="t-featAsk">Ask anything</span></span>
+            </div>
           </div>
         </div>
       </div>
-    </aside>
 
-    <!-- RIGHT COLUMN: top (recapped transcript) + center (live) -->
-    <div class="pane-col">
-      <!-- TOP PANE: already-recapped transcript sections (committed chapters) -->
-      <section class="pane pane-top" id="paneTop">
-        <div class="pane-hd"><span id="t-paneRecapped">📚 Recapped transcript</span><span class="hint" id="t-paneRecappedHint">committed sections</span></div>
-        <div class="pane-scroll" id="topScroll">
-          <div class="pane-empty-hint" id="topEmptyHint">No recapped sections yet — keep talking and chapters will appear here automatically</div>
+      <!-- Panel 2: Summary — AI-generated overview + smart questions -->
+      <div class="card-panel panel-summary" id="panelSummary">
+        <div class="panel-hd"><span>✨ Summary</span><span class="hint">AI-generated</span></div>
+        <div id="summaryScrollEl">
+          <div class="overview" id="overview"></div>
+          <div class="sum-empty" id="sumEmpty">
+            <div class="big">✨</div>
+            <p>Tap <b>"Recap so far"</b> to generate a full summary with sections and smart questions.</p>
+          </div>
         </div>
-      </section>
+      </div>
 
-      <!-- CENTER PANE: live transcription tail -->
-      <section class="pane pane-live live" id="liveCard">
-        <div class="pane-hd"><span class="bd"></span> <span id="t-paneLive">🔴 Live transcript</span><span class="hint" id="t-paneLiveHint">running</span></div>
-        <div class="txt" id="liveTxt"><span class="cursor"></span></div>
-        <div class="as-pause" id="asPause" role="button" tabindex="0" aria-label="Resume auto-scroll"></div>
-      </section>
     </div>
   </div>
 
@@ -1235,6 +1332,7 @@ function applyUI(){
 }
 
 /* ---------- State ---------- */
+let activeTab=0;   // which card panel is visible (0=Live, 1=Chapters, 2=Summary)
 let recog=null, recording=false;
 let interim="", chapters=[], curBuf="", fullText="", lastTs=0;
 let audioCtx=null, analyser=null, rafId=null, micStream=null, micReady=false;
@@ -1569,9 +1667,16 @@ function jumpTo(id){
   const el=document.getElementById(id);
   if(!el)return;
   if(el.classList.contains("chap"))el.classList.add("open");
-  el.scrollIntoView({behavior:"smooth",block:"center"});
-  el.classList.remove("flash");void el.offsetWidth;el.classList.add("flash");
-  setTimeout(()=>el.classList.remove("flash"),900);
+  const panel=el.closest(".card-panel");
+  const panels=[...document.querySelectorAll(".card-panel")];
+  const targetTab=panel?panels.indexOf(panel):-1;
+  const doScroll=()=>{
+    el.scrollIntoView({behavior:"smooth",block:"center"});
+    el.classList.remove("flash");void el.offsetWidth;el.classList.add("flash");
+    setTimeout(()=>el.classList.remove("flash"),900);
+  };
+  if(targetTab>=0&&targetTab!==activeTab){switchTab(targetTab);setTimeout(doScroll,420);}
+  else doScroll();
 }
 
 function refreshChapters(){
@@ -1580,6 +1685,7 @@ function refreshChapters(){
   chapters.forEach((c,i)=>chaptersEl.appendChild(renderChapter(c,i)));
   renderSections();   // keep the tinted transcript blocks in sync with the recap cards
   updateRecapBtn();
+  if(chapters.length)showChapBadge();
 }
 
 /* ---------- Overview / recap-so-far ---------- */
@@ -1644,11 +1750,12 @@ async function buildOverview(){
   // show thinking state if the LLM is in play
   if(LLM.enabled){
     overview.style.display="block";
+    const se0=document.getElementById("sumEmpty");if(se0)se0.style.display="none";
     overview.innerHTML=`<div class="ov-hd"><div class="ic">✨</div><div class="ti">${d.ovTitle}</div></div>
       <div class="ov-think"><span class="sp"></span>${d.thinking}</div>`;
     overview.style.animation="none";void overview.offsetWidth;overview.style.animation="rise .5s cubic-bezier(.2,.8,.2,1) both";
-    const leftScroll=document.getElementById("leftScroll");
-    if(leftScroll) leftScroll.scrollTo({top:0,behavior:"smooth"});
+    const sumPane=document.getElementById("panelSummary");
+    if(sumPane) sumPane.scrollTo({top:0,behavior:"smooth"});
   }
   const a=await analyzeOverview(text);
   lastOverview=a;
@@ -1657,6 +1764,7 @@ async function buildOverview(){
   // Coherent sections covering the whole conversation (fall back to bullets if an older shape comes back).
   const sectionsHtml=ovSectionsHtml(a,d);
   overview.style.display="block";
+  const se1=document.getElementById("sumEmpty");if(se1)se1.style.display="none";
   const icCopy='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>';
   const icShare='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="M16 6l-4-4-4 4"/><path d="M12 2v13"/></svg>';
   const icTxt='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3v5h5"/><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M9 13h6M9 17h4"/></svg>';
@@ -1675,8 +1783,9 @@ async function buildOverview(){
   overview.querySelectorAll(".ov-act").forEach(b=>b.addEventListener("click",()=>recapAction(b.dataset.act)));
   bindOvSectionJumps(overview);
   overview.style.animation="none";void overview.offsetWidth;overview.style.animation="rise .5s cubic-bezier(.2,.8,.2,1) both";
-  const leftScroll2=document.getElementById("leftScroll");
-  if(leftScroll2) leftScroll2.scrollTo({top:0,behavior:"smooth"});
+  const sumPane2=document.getElementById("panelSummary");
+  if(sumPane2) sumPane2.scrollTo({top:0,behavior:"smooth"});
+  showSumBadge();
   tt(d.updated);
 }
 recapBtn.addEventListener("click",buildOverview);
@@ -1970,6 +2079,7 @@ async function start(){
   stat.textContent=I18N[uiLang].listening;
   empty.style.display="none";
   startWave();
+  updateTabLiveDot();
 }
 function stop(){
   recording=false;
@@ -1979,6 +2089,7 @@ function stop(){
   stat.textContent=I18N[uiLang].stopped;
   if(recog){try{recog.stop();}catch(_){}}
   stopWave();
+  updateTabLiveDot();
   endSentence();          // finish the last sentence when recording stops
   evaluateSplit(true);
   // NOTE: we intentionally do NOT stop micStream tracks, so iOS keeps
@@ -2030,7 +2141,9 @@ function doReset(){
     // Restore the empty hint and remove any committed-section blocks.
     topScroll.innerHTML='<div class="pane-empty-hint" id="topEmptyHint">'+I18N[uiLang].topEmptyHint+'</div>';
   }
-  overview.style.display="none";refreshChapters();updateRecapBtn();
+  overview.style.display="none";
+  const seR=document.getElementById("sumEmpty");if(seR)seR.style.display="";
+  refreshChapters();updateRecapBtn();
   try{localStorage.removeItem(AUTOSAVE_STORE);}catch(e){}
   tt(I18N[uiLang].cleared);stat.textContent=I18N[uiLang].ready;
 }
@@ -2518,6 +2631,10 @@ function renderOverviewFrom(a){
   overview.querySelectorAll(".ov-q").forEach(q=>q.addEventListener("click",()=>{navigator.clipboard?.writeText(q.textContent.replace(/^\d+/,"").trim());tt(d.qCopied);}));
   overview.querySelectorAll(".ov-act").forEach(b=>b.addEventListener("click",()=>recapAction(b.dataset.act)));
   bindOvSectionJumps(overview);
+  const se2=document.getElementById("sumEmpty");if(se2)se2.style.display="none";
+  const sumPane3=document.getElementById("panelSummary");
+  if(sumPane3) sumPane3.scrollTo({top:0,behavior:"smooth"});
+  showSumBadge();
 }
 
 /* ---------- Ask the transcript ---------- */
@@ -2611,6 +2728,58 @@ function tryRestoreAutosave(){
 loadSettings();loadContext();
 applyUI();updateRecapBtn();updateKeyUI();syncSettings();updateCtxBtn();
 tryRestoreAutosave();
+
+/* ===== Card Tab System ===== */
+function switchTab(n){
+  activeTab=n;
+  const deck=document.getElementById("cardDeck");
+  if(deck)deck.style.transform="translateX(-"+(n*100)+"%)";
+  document.querySelectorAll(".tab-btn").forEach((b,i)=>b.classList.toggle("active",i===n));
+  if(n===1){const b=document.getElementById("tabChapBadge");if(b)b.classList.remove("show");}
+  if(n===2){const b=document.getElementById("tabSumBadge");if(b)b.classList.remove("show");}
+  updateTabLiveDot();
+}
+
+function updateTabLiveDot(){
+  const d=document.getElementById("tabLiveDot");
+  if(d)d.classList.toggle("show",recording&&activeTab!==0);
+}
+
+function showChapBadge(){
+  if(activeTab!==1){const b=document.getElementById("tabChapBadge");if(b)b.classList.add("show");}
+}
+
+function showSumBadge(){
+  if(activeTab!==2){const b=document.getElementById("tabSumBadge");if(b)b.classList.add("show");}
+}
+
+/* Tab button clicks */
+document.querySelectorAll(".tab-btn").forEach((b,i)=>b.addEventListener("click",()=>switchTab(i)));
+
+/* Swipe gesture on the card viewport */
+(function(){
+  const vp=document.getElementById("cardViewport");
+  if(!vp)return;
+  let tx=0,ty=0,swiping=false;
+  vp.addEventListener("touchstart",e=>{
+    tx=e.touches[0].clientX;ty=e.touches[0].clientY;swiping=true;
+  },{passive:true});
+  vp.addEventListener("touchmove",e=>{
+    if(!swiping)return;
+    const dx=e.touches[0].clientX-tx,dy=e.touches[0].clientY-ty;
+    /* If scrolling vertically in a chapter/summary panel, disable swipe */
+    if(Math.abs(dy)>Math.abs(dx)+6)swiping=false;
+  },{passive:true});
+  vp.addEventListener("touchend",e=>{
+    if(!swiping){swiping=false;return;}
+    swiping=false;
+    const dx=e.changedTouches[0].clientX-tx,dy=e.changedTouches[0].clientY-ty;
+    if(Math.abs(dx)>Math.abs(dy)&&Math.abs(dx)>48){
+      if(dx<0&&activeTab<2)switchTab(activeTab+1);
+      else if(dx>0&&activeTab>0)switchTab(activeTab-1);
+    }
+  },{passive:true});
+})();
 </script>
 </body>
 </html>
