@@ -183,7 +183,11 @@ window.addEventListener("load",function setupPdf(){
      snap — making the auto-scroll pause detection unreliable (the scroll
      events from the animation keep the debounce timer resetting). Instant
      scroll means user-initiated scroll-ups are detected cleanly. */
-  .pane-live.live .txt{max-height:none;min-height:0;flex:1;scroll-behavior:auto}
+  /* Extra bottom padding so the newest lines scroll clear of the floating
+     record/copy/word bar that overlays the bottom of the screen — otherwise
+     fresh text appears hidden behind the controls and can't be read. */
+  .pane-live.live .txt{max-height:none;min-height:0;flex:1;scroll-behavior:auto;
+    padding-bottom:calc(150px + env(safe-area-inset-bottom))}
   /* Auto-scroll paused pill: shown when the user jumps from a recap card to a
      transcript section (or scrolls up manually) so the live tail doesn't yank
      the scroll position back while they read. Tap to resume immediately. */
@@ -219,6 +223,9 @@ window.addEventListener("load",function setupPdf(){
   .jumpBtn::after{content:"";position:absolute;inset:-8px}
   .jumpBtn:hover{opacity:1;transform:scale(1.06)}
   .jumpBtn:active{transform:scale(.92)}
+  /* Compact "link to transcript" affordance — small, sits before the expander */
+  .jumpBtn.link{width:30px;height:30px;border-radius:9px;opacity:.7;margin-left:auto;margin-right:2px}
+  .jumpBtn.link:hover{opacity:1}
   .jumpBtn.sm{width:20px;height:20px;border-radius:6px;opacity:.8;flex:none;margin-left:8px}
   .jumpBtn.sm svg{width:11px;height:11px}
   .jumpBtn.sm::after{inset:-10px}
@@ -250,8 +257,14 @@ window.addEventListener("load",function setupPdf(){
   .chap-meta{flex:1;min-width:0}
   .chap-title{font-size:14.5px;font-weight:700;line-height:1.3;letter-spacing:-.2px}
   .chap-sub{font-size:11px;color:var(--mut);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-  .chev{color:var(--mut);transition:transform .35s;display:grid;place-items:center;flex:none}
+  /* Expand/collapse control — large, obvious tap target (the whole header is
+     clickable too, but this gives a clear affordance). */
+  .chev{color:var(--accent2);transition:transform .35s,background .15s;display:grid;place-items:center;flex:none;
+    width:40px;height:40px;border-radius:12px;border:1px solid var(--line);background:rgba(255,255,255,.05);
+    cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .chev:active{transform:scale(.9);background:rgba(255,255,255,.1)}
   .chap.open .chev{transform:rotate(90deg)}
+  .chap.open .chev:active{transform:rotate(90deg) scale(.9)}
 
   .chap-body{max-height:0;overflow:hidden;transition:max-height .5s cubic-bezier(.2,.8,.2,1)}
   .chap.open .chap-body{max-height:1600px}
@@ -443,10 +456,11 @@ window.addEventListener("load",function setupPdf(){
   .set-card.card-ai .seg button.on{background:linear-gradient(135deg,#a78bfa,#c4b5fd);box-shadow:0 4px 14px rgba(167,139,250,.4);color:#1a0a40}
   .set-card.card-ai .set-section .tt{color:#c4b5fd}
   .set-card.card-ai .set-section .ic{background:rgba(167,139,250,.14);color:#c4b5fd}
-  /* API keys card — warm amber */
-  .set-card.card-api .seg button.on{background:linear-gradient(135deg,#fbbf24,#fcd34d);box-shadow:0 4px 14px rgba(251,191,36,.4);color:#1a0800}
-  .set-card.card-api .set-section .tt{color:#fcd34d}
-  .set-card.card-api .set-section .ic{background:rgba(251,191,36,.14);color:#fcd34d}
+  /* API keys card — soft rose */
+  .set-card.card-api .seg button.on{background:linear-gradient(135deg,#fb7185,#fda4af);box-shadow:0 4px 14px rgba(251,113,133,.4);color:#40000d}
+  .set-card.card-api .set-section .tt{color:#fda4af}
+  .set-card.card-api .set-section .ic{background:rgba(251,113,133,.14);color:#fda4af}
+  .set-card.card-api .keyrowbtn{border-color:rgba(251,113,133,.32)}
 
   /* Context / History / Ask panels */
   .ctx-area{width:100%;background:rgba(0,0,0,.3);border:1px solid var(--line);color:var(--txt);border-radius:12px;
@@ -518,6 +532,18 @@ window.addEventListener("load",function setupPdf(){
 
   /* Panel 0 — Live: pane fills panel */
   .panel-live .pane{flex:1;min-height:0}
+
+  /* Live home hero — mic + tagline shown when nothing has been transcribed yet.
+     Absolutely centered over the (empty) transcript area; hidden once text flows. */
+  .live-hero{position:absolute;left:0;right:0;top:46px;bottom:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;gap:6px;padding:24px;
+    color:var(--mut);font-size:14px;line-height:1.7;pointer-events:none}
+  .live-hero .big-wrap{position:relative;display:inline-grid;place-items:center;margin-bottom:14px}
+  .live-hero .big-ring{position:absolute;width:88px;height:88px;border-radius:50%;border:1.5px solid rgba(124,160,255,.28)}
+  .live-hero .big-ring.r2{width:118px;height:118px;border-color:rgba(124,160,255,.16);animation:emptypulse 3.2s ease-out infinite}
+  .live-hero .big-ring.r1{animation:emptypulse 3.2s ease-out infinite .6s}
+  .live-hero .big{font-size:46px;position:relative;z-index:1;filter:drop-shadow(0 6px 18px rgba(124,92,255,.5))}
+  .live-hero.hide{display:none}
 
   /* Panel 1 — Chapters: single scroll, content stacks */
   .panel-chapters{overflow-y:auto;-webkit-overflow-scrolling:touch;
@@ -609,6 +635,11 @@ window.addEventListener("load",function setupPdf(){
         <section class="pane pane-live live" id="liveCard">
           <div class="pane-hd"><span class="bd"></span> <span id="t-paneLive">🔴 Live transcript</span><span class="hint" id="t-paneLiveHint">running</span></div>
           <div class="txt" id="liveTxt"><span class="cursor"></span></div>
+          <!-- Home / idle hero: shown until the first words are transcribed -->
+          <div class="live-hero" id="liveHero">
+            <div class="big-wrap"><span class="big-ring r1"></span><span class="big-ring r2"></span><div class="big">🎙️</div></div>
+            <div id="t-heroMsg">Transcribe live, split into chapters, recap<br>and suggest smart questions as you go!</div>
+          </div>
           <div class="as-pause" id="asPause" role="button" tabindex="0" aria-label="Resume auto-scroll"></div>
         </section>
       </div>
@@ -617,7 +648,7 @@ window.addEventListener("load",function setupPdf(){
       <div class="card-panel panel-chapters" id="panelTranscript">
         <div class="panel-hd"><span id="t-paneRecapped">📝 Transcript sections</span><span class="hint" id="t-paneRecappedHint">committed</span></div>
         <div id="topScroll">
-          <div class="pane-empty-hint" id="topEmptyHint">No sections yet — keep talking and transcript chunks will appear here automatically</div>
+          <div class="pane-empty-hint" id="topEmptyHint">No sections yet — keep talking and transcript chunks will appear here automatically.</div>
         </div>
       </div>
 
@@ -1213,7 +1244,7 @@ const I18N={
   en:{tag:"Live conversation intelligence",empty:"Transcribe live, split into chapters, recap<br>and suggest smart questions as you go!",
     reset:"Reset",export:"Word",copy:"Copy",listening:"Listening…",ready:"Tap record to begin",stopped:"Stopped",
     chapter:"Chapter",questions:"Smart questions",transcript:"Show transcript",recapbtn:"Recap so far",
-    ovTitle:"Recap so far",topq:"Top 3 questions",keypoints:"Key points",
+    ovTitle:"Recap so far",topq:"Smart questions",keypoints:"Key points",
     bysection:"Recap by section",fulltranscript:"Full transcript",speaker:"Speaker",
     noSupport:"Speech recognition isn't supported here. Use Safari on iPhone or Chrome.",
     mic:"Mic blocked. Allow microphone access in Settings → Safari.",cleared:"Cleared",exported:"Exported",
@@ -1278,7 +1309,7 @@ const I18N={
   it:{tag:"Intelligenza per conversazioni dal vivo",empty:"Trascrivi dal vivo, dividi in capitoli, riepiloga<br>e proponi domande intelligenti mentre parli!",
     reset:"Reset",export:"Word",copy:"Copia",listening:"In ascolto…",ready:"Tocca per registrare",stopped:"Fermato",
     chapter:"Capitolo",questions:"Domande intelligenti",transcript:"Mostra trascrizione",recapbtn:"Riepilogo finora",
-    ovTitle:"Riepilogo finora",topq:"3 domande chiave",keypoints:"Punti chiave",
+    ovTitle:"Riepilogo finora",topq:"Domande intelligenti",keypoints:"Punti chiave",
     bysection:"Riepilogo per sezioni",fulltranscript:"Trascrizione completa",speaker:"Interlocutore",
     noSupport:"Riconoscimento vocale non supportato. Usa Safari su iPhone o Chrome.",
     mic:"Microfono bloccato. Consenti l'accesso in Impostazioni → Safari.",cleared:"Cancellato",exported:"Esportato",
@@ -1346,6 +1377,7 @@ function applyUI(){
   const d=I18N[uiLang];
   document.getElementById("t-tag").innerHTML=d.tag;
   document.getElementById("t-empty").innerHTML=d.empty;
+  {const h=document.getElementById("t-heroMsg");if(h)h.innerHTML=d.empty;}
   set("t-featChap",d.featChap);set("t-featAI",d.featAI);set("t-featAsk",d.featAsk);
   document.getElementById("t-copy").textContent=d.copy;
   document.getElementById("t-export").textContent=d.export;
@@ -1643,10 +1675,10 @@ function renderChapter(ch,i){
         <div class="chap-title">${ch.pending?"…":esc(ch.title)}</div>
         <div class="chap-sub">${d.chapter} · ${ch.words} ${d.words} <span class="pill">${ch.lang.toUpperCase()}</span>${ch.isNew?`<span class="pill new">NEW</span>`:""}</div>
       </div>
-      <button class="jumpBtn" data-jump="seg-${ch.id}" title="${esc(d.jumpToTranscript)}" aria-label="${esc(d.jumpToTranscript)}" style="color:${t.ac}">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>
+      <button class="jumpBtn link" data-jump="seg-${ch.id}" title="${esc(d.jumpToTranscript)}" aria-label="${esc(d.jumpToTranscript)}" style="color:${t.ac}">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"/><path d="M11 6l.5-.5a3.5 3.5 0 0 1 5 5l-2 2"/><path d="M13 18l-.5.5a3.5 3.5 0 0 1-5-5l2-2"/></svg>
       </button>
-      <div class="chev"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></div>
+      <button class="chev" aria-label="${esc(d.expand||'Expand')}"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
     </div>
     <div class="chap-body"><div class="chap-inner">${body}</div></div>`;
   el.querySelector(".chap-hd").addEventListener("click",e=>{if(e.target.closest(".jumpBtn"))return;el.classList.toggle("open");});
@@ -1771,7 +1803,7 @@ function ovSectionsHtml(a,d){
       else if(chapters.length && i<chapters.length){ jumpTarget="seg-"+chapters[i].id; }
       else if(liveTarget){ jumpTarget=liveTarget; }
       const jump=jumpTarget?`<button class="jumpBtn sm" data-jump="${jumpTarget}" title="${esc(jumpTitle)}" aria-label="${esc(jumpTitle)}">
-          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15l6-6"/><path d="M11 6l.5-.5a3.5 3.5 0 0 1 5 5l-2 2"/><path d="M13 18l-.5.5a3.5 3.5 0 0 1-5-5l2-2"/></svg>
         </button>`:"";
       return `<div class="ov-sec">
           <div class="ov-sec-hd"><span class="ov-sec-n">${i+1}</span><span style="flex:1">${esc(s.title||"")}</span>${jump}</div>
@@ -2034,8 +2066,14 @@ function renderSections(){
   if(hint) hint.style.display = chapters.length ? "none" : "";
   document.querySelectorAll('#segSecWrap .jumpBtn[data-jump]').forEach(b=>b.addEventListener("click",e=>{e.stopPropagation();jumpTo(b.dataset.jump);}));
 }
+function updateLiveHero(){
+  const h=document.getElementById("liveHero");if(!h)return;
+  const hasText=!!(segments.length||interim||curBuf.trim()||recording);
+  h.classList.toggle("hide",hasText);
+}
 function renderLive(){
   ensureLiveStructure();
+  updateLiveHero();
   const tail=segHtml(segments);
   // interim shown in the current speaker's color (stable; no per-tone flicker)
   const interimHtml=interim?`<span class="${pc(currentSpeaker).css}" style="opacity:.78">${esc(interim)}</span>`:"";
@@ -2126,6 +2164,7 @@ async function start(){
   empty.style.display="none";
   startWave();
   updateTabLiveDot();
+  updateLiveHero();
 }
 function stop(){
   recording=false;
@@ -2182,6 +2221,7 @@ function doReset(){
   currentSpeaker=0;lastUtteranceEnd=0;lastActivityTs=0;
   // Clear the live pane (tail) and the top pane (recapped sections).
   liveTxt.innerHTML='<span class="cursor"></span>';
+  updateLiveHero();
   const topScroll=document.getElementById("topScroll");
   if(topScroll){
     // Restore the empty hint and remove any committed-section blocks.
